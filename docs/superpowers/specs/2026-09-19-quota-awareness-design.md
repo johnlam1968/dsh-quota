@@ -127,8 +127,10 @@ No test may touch the live network.
 - **The endpoint exposes counts and percentages, not a budget.** "How many requests remain" is derived, never authoritative — the tool must not imply precision it does not have.
 - **Deferred, with hooks noted:** a `QuotaProvider` seam when a second source appears (OpenRouter credits, a local GPU queue); `ctx.credentials` for the key; a client UI row subscribing to `quota/changed`; injecting a refresh notice into a waiting agent through `agent.inject()`.
 
-## 9. Open questions for review
+## 9. Resolved decisions (2026-09-19)
 
-1. **Tool name** — `quota_status` (generic, takes a `bucket`) or `mmx_quota` (obvious provider, narrower)?
-2. **Bucket selection** — should the default read `'general'` specifically, or read every bucket and select by model name so a future MiniMax model routes correctly without a config change?
-3. **Low-but-nonzero behaviour** — I propose `usable: 'yes'` with a `warning` below the configured floor, rather than `no`. Confirm, since a stricter reading would change how often the orchestrator switches away.
+All three were confirmed as recommended:
+
+1. **Tool name: `quota_status`.** Generic, with the provider implied by configuration. A second source later reuses the same tool behind a `provider` parameter rather than introducing a second tool name that prompts and operator notes would have to learn.
+2. **Bucket selection: default `general`, overridable.** One bucket is read unless `bucket` is passed explicitly. Selecting by model name across all buckets was rejected as more parsing plus a naming rule to maintain, for a provider whose only relevant bucket today is `general`.
+3. **Low-but-nonzero: `usable: 'yes'` with a `warning`.** The tool informs and the orchestrator decides; reporting `no` below the floor would make the tool opinionated about a tradeoff that belongs to the caller. The floor stays configuration (`blockBelowPercent`, default 5).
