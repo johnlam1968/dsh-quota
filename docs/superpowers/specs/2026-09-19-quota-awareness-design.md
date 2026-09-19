@@ -167,3 +167,33 @@ All three were confirmed as recommended:
 **Testing.** Harness cases with a fake `sessionController` capturing calls: a switch on a confirmed transition; **no** switch when the state wobbles (the hysteresis assertion); the restore using the remembered route rather than the config default; and no call at all when `enabled: false`. Required mutation proofs: delete the confirmation requirement (a wobble must then cause a switch, failing the test) and delete the remembered-route restore (it must then fall back to the config default and fail).
 
 **Still not a gate.** This changes a route. It never blocks, queues, parks, or refuses anything.
+
+
+---
+
+## 11. Agent-judgement switching: the `select_model` tool (added 2026-09-19, proven live)
+
+Section 10 lets the *policy row* act on configuration. This section gives the *agent* the same power by its own judgement -- the other half of the operator's request ("programmatically, or with agent judgement").
+
+**Proven before being written down.** A dynamic Cordis plugin registering exactly this tool was mounted and ran against the live harness (`selmod-1`/`pkg-1`): `harness.registerTool` + `harness.defineTool`, `ctx.get('sessionController')` with an absence check, three modes, and `exec.agent.session.id` as the default target. The dynamic plugin is process-local and dies on restart; this row is the durable version and starts from that proven code rather than a redesign.
+
+**Surface:**
+
+```
+select_model(status?, list?, provider?, model?, reasoningEffort?, sessionId?)
+```
+
+- `status` -- the calling session's committed `request/header` config, i.e. the route it is actually on.
+- `list` -- `modelCatalog()`: routable providers, their models, and the deployment default.
+- otherwise -- `sessionController.selectModel({ sessionId, provider, model, reasoningEffort? })`, with the target defaulting to `exec.agent.session.id` and an explicit `sessionId` allowed for orchestration.
+
+**Rules that came out of building it:**
+
+- **Never silently no-op.** Refuse with a readable message when no route is supplied, when `status` has no committed request to report, and when the controller rejects the route -- surfacing its own reason (`session/model-unavailable`) rather than a generic failure.
+- **Warn about the cost in the description.** A switch is logged as a visible notice and may start a new request series, so the tool description tells the model to prefer one switch over many. This is the flapping lesson applied at the point of use rather than buried in a policy.
+- **Refuse when there is no calling agent and no explicit `sessionId`** -- the `tool_todo` precedent.
+- **It changes a route and nothing else.** No blocking, no queueing, no message parking.
+
+**Why this is a separate row from section 10's policy:** the tool is useful with no quota concept at all ("this stretch of work is mechanical -- move to a cheap, fast route"). Coupling it to quota awareness would bury a general capability inside one specific policy. Both drive the same service.
+
+**Testing:** contract cases for all three modes against a fake `sessionController`; a harness case proving the tool registers and is callable; and every refusal path pinned -- no route supplied, no calling agent, and a rejected route surfacing the controller's reason.
