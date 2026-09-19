@@ -55,7 +55,7 @@ Each row is its own entry (`lib/index.js`, `lib/index-select-model.js`, `lib/ind
 
 **Files:** Create `src/config.ts`, `src/index.ts`, `tsconfig.json`, `tsconfig.build.json`, `scripts/build.mjs`, `tests/harness/root.ts`, `tests/harness/mount.test.ts`; Modify `package.json`
 
-**Interfaces:** Produces `name = 'dsh-quota'`, `inject = []`, `Config`, `QuotaConfig`, and a harness root factory.
+**Interfaces:** Produces `name = 'dsh-quota'`, `inject = ['tools']` (the row registers a tool, so `tools` is a hard dependency), `Config`, `QuotaConfig`, and a harness root factory. The other two rows declare: the select-model row `inject = ['tools']`, and the policy row `inject = ['quota']` -- a hard dependency on the observation row's service, so the policy waits for it rather than running blind.
 
 - [ ] **Step 1:** Write the failing export test (mirroring `dsh-telegram/tests/unit/config.test.ts`): `name`, `inject`, and the schema defaults — `bucket === 'general'`, `maxAgeSeconds === 120`, `confirmations === 2`, `minSwitchIntervalSeconds === 300`, `blockBelowPercent === 5`, and that an unknown `bucket` type is rejected.
 - [ ] **Step 2:** Run `pnpm vitest run tests/unit/config.test.ts` → FAIL (`src/config.ts` missing).
