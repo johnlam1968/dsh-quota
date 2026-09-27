@@ -17,7 +17,8 @@ Three rows in one package, each its own entry point so a deployment enables them
 This project was designed in a different session and handed off. Everything the next session needs is in the repo; nothing lives only in a conversation.
 
 - **Spec (binding):** `docs/superpowers/specs/2026-09-19-quota-awareness-design.md` — 11 sections. §3 architecture, §6 configuration, §10 the switching policy (with the guards against flapping), §11 the `select_model` tool surface and every refusal path.
-- **Plan (the work):** `docs/superpowers/plans/2026-09-19-quota-awareness.md` — 8 tasks across two milestones, with the mutation proof each task must run.
+- **Plan (the work):** `docs/superpowers/plans/2026-09-19-quota-awareness.md` — 8 tasks across two milestones, with the mutation proof each task must run; Task 8a is an optional wake-on-refresh row.
+- **Background (informative, not binding):** `docs/DSH_SEAMS_FOR_QUOTA.md` — a topical survey of the dsh seams relevant to quota awareness: `tools/pre-execute`, `agent/request`, `agent/pre-step`, `ctx.sessionController.selectModel(...)`, and `ctx.subagents.sendMessage(...)`. Read this before extending the policy row or designing anything that crosses the "advisory, never a gate" line.
 - **SDD ledger (progress):** `<worktree>/.superpowers/sdd/2026-09-19-quota-awareness/progress.md` — gitignored scratch, but it is the recovery map: the pre-flight scan, Task 1's rulings, the mutation results, and the gate limits that were found by probing. Trust it and `git log` over recollection.
 - **Branch and worktree:** `feat/quota-impl` at `.worktrees/quota-impl`. Continue there; `master` holds the docs.
 

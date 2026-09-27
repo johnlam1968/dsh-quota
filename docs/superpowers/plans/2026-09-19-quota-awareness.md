@@ -136,6 +136,10 @@ Each row is its own entry (`lib/index.js`, `lib/index-select-model.js`, `lib/ind
 
 **Interfaces:** Consumes `ctx.quota` and `ctx.sessionController`; produces the policy row. **`targets` is `string[]`, where empty means every live session** — Task 1's reading of the spec. If this task needs a richer shape (per-preset, per-origin, a deny list), refine `config.ts` here and say so: that is a deliberate change to a shared default, not a local choice.
 
+**Filter rule (refined during design review):** the row switches only sessions whose committed `request/header` has `provider === config.throttledProvider`. A session already on the fallback is left alone; a session on a different provider is left alone. The opt-in to switch is implicit in the committed route, not in a per-session allowlist. This is the "soft gate" the operator described (background: `docs/DSH_SEAMS_FOR_QUOTA.md` §1, §3): it changes a route, never denies a call, and matches the spec's "advisory, never a gate" doctrine.
+
+**Forbidden mechanism:** do **not** subscribe to `tools/pre-execute` to deny a sub-agent call because the quota is low. The arguments are frozen at that seam ([`docs/subsystems/tools.md:678-693`](https://github.com/deepseek-harness/deepseek-harness/blob/main/docs/subsystems/tools.md)), so a listener can only `allow` / `deny` / `cancel` / `ask`, and a denial is the deleted `QuotaGate` in a different uniform.
+
 - [ ] **Step 1:** Failing tests against a fake `sessionController` and a fake `ctx.quota`: on a **confirmed** blocked state (the second consecutive blocked reading) each live session from `ctx.agents.list()` is switched to `fallback` and its previous route is remembered; on a **confirmed** refresh each session is restored to *its remembered* route, not the config default; a single blocked reading followed by a healthy one causes **no** switch at all (the hysteresis assertion); a `warning`-only reading causes no switch; a second transition inside `minSwitchIntervalSeconds` is skipped; when `enabled: false` no controller call is made; a fallback the controller rejects is logged and not retried until the next transition.
 - [ ] **Step 2:** Run → FAIL.
 - [ ] **Step 3:** Implement, subscribing through `ctx.on('quota/changed', …)` (an effect) and keeping the confirmation counter and per-session memory in the row's own state.
@@ -155,11 +159,47 @@ Each row is its own entry (`lib/index.js`, `lib/index-select-model.js`, `lib/ind
 
 **Milestone 2 acceptance:** an agent can inspect and change a route in one tool call; the policy switches and restores on confirmed transitions only; observation works with the policy disabled.
 
+### Task 8a (optional): wake-on-refresh from a host timer
+
+**Why this exists.** The operator asked: *"let the sub-agent deplete the quota, wait M minutes, then the main agent push the sub-agent to continue."* dsh has the seam (`ctx.subagents.sendMessage(...)`) but no shipped row uses it. The background doc (`docs/DSH_SEAMS_FOR_QUOTA.md` §4) records the seam and the three constraints. This task is **opt-in** — leave the policy row with the light answer (parent decides when to wake its child) unless the operator explicitly enables wake-on-refresh.
+
+**Files:** Create `src/policy/wake-on-refresh.ts`, `src/index-wake-on-refresh.ts`, `tests/contract/wake-on-refresh.test.ts`, `tests/harness/wake-on-refresh.test.ts`; Modify `cordis.patch.yml`
+
+**Interfaces:** Consumes `ctx.quota`, `ctx.subagents`, `ctx.agents`; produces a fourth row (independently disableable; `disabled: true` by default, same as Task 7's route-policy row). Subscribes to `quota/changed` and walks `ctx.agents.list()` to find continuable children whose direct parent's `request/header` has `provider === config.throttledProvider`; on a confirmed transition `usable: 'no' → usable: 'yes'`, calls `ctx.subagents.sendMessage(parentAgent, childId, [{ type: 'text', text: config.wakeMessage }], { signal })` for each.
+
+**Constraints from the source** (each is a test case, not a guideline):
+
+- `sendMessage` requires the **exact live** parent `Agent`; a session id is rejected. Walk `ctx.agents.list()` and match by `agent.id === recordedParentSessionId`.
+- The parent must be currently active in this process. If the parent has settled/cold, reject the wake with a typed error; do not retry.
+- The child must be continuable. One-shot children are not admitted by `sendMessage`. Filter them out before iterating.
+- The signal passed to `sendMessage` must be owned by the row's `ctx.effect`, so disposal cleanly aborts an in-flight wake.
+
+**Failure modes to test:**
+
+- a parent on the throttled route, but already on the fallback → no wake
+- a parent on the throttled route, with a continuable child whose descriptor is `one-shot` → no wake
+- a parent on the throttled route, with a continuable child, but parent has settled → typed error, no wake
+- a parent on a *different* route → no wake (filter rule)
+- the wake itself rejects (e.g. target unknown) → logged, no retry until the next confirmed transition
+
+**Why this is a separate row and not part of Task 7.** Two reasons. First, a host timer that wakes a child crosses one more doctrinal line than a route switch — the timer is the policy *and* decides when the child runs, not the model. Second, the seam is broader than quota (a future "park until human review" row would use the same primitives), so coupling it to quota would bury a general capability inside one specific policy.
+
+- [ ] **Step 1:** Read `docs/DSH_SEAMS_FOR_QUOTA.md` §4.5 — every constraint there is a test case.
+- [ ] **Step 2:** Write the failing contract tests against fake `ctx.quota`, `ctx.subagents`, and `ctx.agents`.
+- [ ] **Step 3:** Write the failing harness case: a synthetic `quota/changed` to `usable: 'yes'` triggers `sendMessage` against the recorded child exactly once, with the parent's live `Agent` as the first argument.
+- [ ] **Step 4:** Implement. All timer / signal / walker state lives inside one `ctx.effect`.
+- [ ] **Step 5:** **Mutation proofs:** remove the live-parent walk (the cold-parent case must then `throw`, failing that assertion); remove the one-shot filter (the one-shot-child case must then call `sendMessage`, failing that assertion).
+- [ ] **Step 6:** Gates, then commit `feat(policy): wake continuable sub-agents on confirmed quota refresh`.
+- [ ] **Step 7:** Add the row to `cordis.patch.yml` with `disabled: true`. Document in `README.md` that this row is opt-in.
+
+**Why this stays optional.** The light answer is sufficient when the parent agent is itself driving the loop: after the route is restored on confirmed refresh, the parent's next turn can call `send_message` itself, and the model decides when to wake the child. The wake-on-refresh row exists for deployments where the parent agent is parked / cold and no model turn is coming to dispatch the wake on its own. That is the right place to draw the line; the spec's "advisory, never a gate" rule is preserved because the wake is a one-shot event after a confirmed refresh, never an interruption of in-flight work.
+
 ---
 
 ## Self-review
 
-- **Spec coverage:** §1–9 map to Tasks 1–5 (service, event, tool, boundary refresh); §10 maps to Task 7; §11 maps to Task 6; the bundle and cutover are Task 8. The deferred items in §8 (provider seam, credentials, UI row, `agent.inject`) have no task by design.
+- **Spec coverage:** §1–9 map to Tasks 1–5 (service, event, tool, boundary refresh); §10 maps to Task 7; §11 maps to Task 6; the bundle and cutover are Task 8. The deferred items in §8 (provider seam, credentials, UI row, `agent.inject`) have no task by design. Task 8a is opt-in and is not part of the binding schedule — it documents a seam that exists but is not needed unless the operator wants host-driven wake.
 - **Ordering:** observation before switching, because the policy consumes the event the observation row emits; the tool row is independent of both and could ship first if the operator wants judgement-based switching before quota awareness.
 - **Known gap, deliberate:** the plan's Task 6 points at live-proven code held in a dynamic plugin package rather than reproducing it inline. If that package is gone (a process restart destroys it), the implementer must rebuild it from §11's surface and rules — which is why §11 records the surface, the three modes, and every refusal path rather than only the idea.
+- **Pre-dispatch seams (background):** `docs/DSH_SEAMS_FOR_QUOTA.md` is the topical background doc that informed the "soft gate" wording in Task 7 and the optional Task 8a. Read it before extending the policy row or designing anything that touches `tools/pre-execute` / `agent/request` / `agent/pre-step`.
 - **Not covered here:** anything about `dsh-telegram`. This plan is a separate repository and must not touch that project's worktree, plan, or ledger.
