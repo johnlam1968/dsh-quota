@@ -1,4 +1,6 @@
-import { rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
@@ -146,10 +148,30 @@ function renderStatusReport(payload: InferredStatus): string {
   return [head, ...lines].join('\n')
 }
 
-/** Read the environment without letting an absent key read as an empty token. */
-function bearer(envName: string): string | undefined {
-  const value = process.env[envName]
-  return value === undefined || value.length === 0 ? undefined : value
+/**
+ * Resolve the bearer token: environment first, then the credential file.
+ *
+ * The environment wins so a deployment can override without touching the file.
+ * Both sources are read defensively — a malformed file yields no token rather
+ * than an exception inside the probe loop.
+ */
+function bearer(envName: string, credentialFile: string): string | undefined {
+  const fromEnv = process.env[envName]
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv
+  if (credentialFile === '') return undefined
+
+  try {
+    const path = credentialFile.startsWith('~')
+      ? join(homedir(), credentialFile.slice(1))
+      : credentialFile
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return undefined
+    const key = (parsed as Record<string, unknown>)['api_key']
+    return typeof key === 'string' && key.length > 0 ? key : undefined
+  } catch {
+    // No file, unreadable, or not JSON: simply no credential.
+    return undefined
+  }
 }
 
 /**
@@ -353,9 +375,11 @@ export default class QuotaService extends Service {
 
   /** One HTTP attempt. Never throws; every failure becomes a readable error. */
   private async readOnce(now: number): Promise<PlanStatus> {
-    const token = bearer(this.config.authEnv)
+    const token = bearer(this.config.authEnv, this.config.credentialFile)
     if (token === undefined) {
-      return this.errorStatus(`environment variable ${this.config.authEnv} is unset`)
+      return this.errorStatus(
+        `no credential: ${this.config.authEnv} is unset and ${this.config.credentialFile} yielded no api_key`,
+      )
     }
     try {
       const response = await fetch(this.config.endpoint, {

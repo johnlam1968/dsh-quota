@@ -15,6 +15,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     endpoint: z<string, string, "plain">;
     /** Name of the environment variable holding the bearer token. */
     authEnv: z<string, string, "plain">;
+    /**
+     * Fallback credential file, read for an `api_key` when `authEnv` is unset.
+     *
+     * The MiniMax CLI already keeps a working credential at `~/.mmx/config.json`,
+     * so without this the row mounts and then reports every read as
+     * unauthenticated — mounted but blind. Empty disables the fallback.
+     */
+    credentialFile: z<string, string, "defined">;
     /** Per-request timeout for the quota read, in ms. */
     requestTimeoutMs: z<number, number, "defined">;
     /**
@@ -85,6 +93,14 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
     endpoint: z<string, string, "plain">;
     /** Name of the environment variable holding the bearer token. */
     authEnv: z<string, string, "plain">;
+    /**
+     * Fallback credential file, read for an `api_key` when `authEnv` is unset.
+     *
+     * The MiniMax CLI already keeps a working credential at `~/.mmx/config.json`,
+     * so without this the row mounts and then reports every read as
+     * unauthenticated — mounted but blind. Empty disables the fallback.
+     */
+    credentialFile: z<string, string, "defined">;
     /** Per-request timeout for the quota read, in ms. */
     requestTimeoutMs: z<number, number, "defined">;
     /**
@@ -163,6 +179,7 @@ export interface QuotaConfig {
     entry: string;
     endpoint: string;
     authEnv: string;
+    credentialFile: string;
     requestTimeoutMs: number;
     readAttempts: number;
     videoModelPatterns: string[];

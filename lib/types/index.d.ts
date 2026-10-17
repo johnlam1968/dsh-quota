@@ -53,6 +53,7 @@ export default class QuotaService extends Service {
         entry: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         endpoint: import("@deepseek-ai/schemastery").default<string, string, "plain">;
         authEnv: import("@deepseek-ai/schemastery").default<string, string, "plain">;
+        credentialFile: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         requestTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         readAttempts: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         videoModelPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;
@@ -82,6 +83,7 @@ export default class QuotaService extends Service {
         entry: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         endpoint: import("@deepseek-ai/schemastery").default<string, string, "plain">;
         authEnv: import("@deepseek-ai/schemastery").default<string, string, "plain">;
+        credentialFile: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         requestTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         readAttempts: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         videoModelPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;

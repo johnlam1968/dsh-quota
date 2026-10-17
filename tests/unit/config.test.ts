@@ -22,6 +22,7 @@ describe('Config', () => {
     const config = valid()
     expect(config.entry).toBe('general')
     expect(config.readAttempts).toBe(3)
+    expect(config.credentialFile).toBe('~/.mmx/config.json')
     expect(config.requestTimeoutMs).toBe(15_000)
     expect(config.lowWaterMarkPercent).toBe(20)
     expect(config.schedule.divisor).toBe(4)
@@ -30,9 +31,9 @@ describe('Config', () => {
     // reads all of these, so a field present in one and missing from the
     // other must fail here rather than arriving as undefined at runtime.
     expect(Object.keys(config).sort()).toEqual([
-      'authEnv', 'blockPatterns', 'endpoint', 'entry', 'lowWaterMarkPercent',
-      'markerPath', 'provider', 'readAttempts', 'requestTimeoutMs', 'schedule',
-      'videoEntry', 'videoModelPatterns',
+      'authEnv', 'blockPatterns', 'credentialFile', 'endpoint', 'entry',
+      'lowWaterMarkPercent', 'markerPath', 'provider', 'readAttempts',
+      'requestTimeoutMs', 'schedule', 'videoEntry', 'videoModelPatterns',
     ])
     expect(Object.keys(config.schedule).sort()).toEqual([
       'baseBackoffMs', 'divisor', 'jitterRatio', 'maxBackoffMs',

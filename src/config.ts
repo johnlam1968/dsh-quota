@@ -20,6 +20,15 @@ export const Config = z.object({
   /** Name of the environment variable holding the bearer token. */
   authEnv: z.string(),
 
+  /**
+   * Fallback credential file, read for an `api_key` when `authEnv` is unset.
+   *
+   * The MiniMax CLI already keeps a working credential at `~/.mmx/config.json`,
+   * so without this the row mounts and then reports every read as
+   * unauthenticated — mounted but blind. Empty disables the fallback.
+   */
+  credentialFile: z.string().default('~/.mmx/config.json'),
+
   /** Per-request timeout for the quota read, in ms. */
   requestTimeoutMs: z.natural().min(1).default(15_000),
 
@@ -95,6 +104,7 @@ export interface QuotaConfig {
   entry: string
   endpoint: string
   authEnv: string
+  credentialFile: string
   requestTimeoutMs: number
   readAttempts: number
   videoModelPatterns: string[]
