@@ -102,6 +102,29 @@ Rules taken verbatim in spirit:
 
 ## Next
 
-Task 9 first, not Task 4. The contract tier is what makes any later claim about
-`src/index.ts` mean something, and it is cheap: the harness root already exists.
-Then Task 4 — the pure reconcile reducer, a four-case decision table.
+Executing under subagent-driven-development. The authoritative task state,
+rulings and review outcomes live in the plan's workspace ledger:
+
+```
+.superpowers/sdd/2026-10-17-quota-reset-service/progress.md
+```
+
+Order is dependency order, not numeric:
+
+```
+9a (contract: lifecycle + failure channels)  ← running now, no dependency
+4  (reconcile reducer)
+5  (quota_status tool)
+6  (wire subscription into the row)
+9b (contract: subscription cases)
+7  (build + import allowlist)
+8  (composition row)
+```
+
+Task 9a runs before 4–6 because every claim about `src/index.ts` is currently
+unverifiable, and building more on an untested base compounds it.
+
+**Rulings recorded so far** (full text with cost-if-wrong in the ledger):
+R1 widened `SubscriptionDecision` so `attach` carries the model the caller needs;
+R2 forbids guessing the `defineTool` body; R3 split Task 9 and made Task 6 wait
+for its cases.

@@ -108,19 +108,23 @@ describe('decideBinding', () => {
   // MUTATION: compare only the provider and ignore the model.
   it('stays attached across a model change within the same plan', () => {
     expect(decideBinding({ provider: PROVIDER, model: 'm1' }, { provider: PROVIDER, model: 'm2' }, PROVIDER))
-      .toEqual({ action: 'stay' })
+      // A model change within one plan still re-renders the line, but must not
+      // re-register the tool.
+      .toEqual({ action: 'stay', model: 'm2' })
   })
 
   // MUTATION: re-attach on every reconcile.
   it('attaches a session that arrives on this row', () => {
     expect(decideBinding(null, { provider: PROVIDER, model: 'm1' }, PROVIDER))
-      .toEqual({ action: 'attach' })
+      // The decision must carry the model: the caller builds the prompt line
+      // and the tool's report from it, so `attach` without one is unusable.
+      .toEqual({ action: 'attach', model: 'm1' })
   })
 
   // MUTATION: compare models as a set difference.
   it('re-attaches when the plan changes away and back', () => {
     expect(decideBinding({ provider: PROVIDER, model: 'm1' }, { provider: PROVIDER, model: 'm1' }, PROVIDER))
-      .toEqual({ action: 'stay' })
+      .toEqual({ action: 'stay', model: 'm1' })
   })
 })
 ```
@@ -141,9 +145,10 @@ export interface Binding {
 }
 
 export type SubscriptionDecision =
-  | { readonly action: 'attach' }
+  | { readonly action: 'attach'; readonly model: string }
   | { readonly action: 'detach' }
-  | { readonly action: 'stay'; readonly model: string }
+  /** `model: null` means "unbound, and still unbound" — nothing to render. */
+  | { readonly action: 'stay'; readonly model: string | null }
 
 export function decideBinding(
   current: Binding | null,
@@ -151,10 +156,11 @@ export function decideBinding(
   provider: string,
 ): SubscriptionDecision {
   const wanted = incoming !== null && incoming.provider === provider ? incoming : null
-  if (wanted === null) return { action: current === null ? 'stay' : 'detach' }
-  if (current === null) return { action: 'attach' }
-  if (current.provider === wanted.provider && current.model === wanted.model) return { action: 'stay', model: wanted.model }
-  return { action: 'attach' }
+  if (wanted === null) {
+    return current === null ? { action: 'stay', model: null } : { action: 'detach' }
+  }
+  if (current !== null && current.model === wanted.model) return { action: 'stay', model: wanted.model }
+  return { action: 'attach', model: wanted.model }
 }
 ```
 
@@ -289,6 +295,12 @@ export function statusPayload(status: PlanStatus | null, model: string, spec: De
 }
 ```
 
+**Ruling R2 — do not guess this body.** The writing-plans skill treats an elided
+step as a plan failure, and it is right here: the parameter DSL is dsh's own,
+not JSON Schema, and `ctx.tools.register` re-validates the definition at
+registration. Before writing it, read `@deepseek-ai/dsh-tools` README section
+"Register a tool" and the `ToolDefinition` declaration for the installed version.
+
 Register it with `defineTool`, whose `description` is the model's only guide to *when* to call it. The instruction that matters is the one that prevents the halt:
 
 > `'… Call this before concluding that a provider is unavailable: a usage limit is temporary and announces its own reset.'`
@@ -396,6 +408,10 @@ Run: `dsh --profile web --dump-config` and confirm a `# == dsh-quota` layer mark
 ---
 
 ### Task 9: The contract tier
+
+**Split by ruling R3.** **9a** (below) runs FIRST, before Tasks 4–6: it tests
+shipped code and has no dependency on them. **9b** is the subscription half and
+runs after Task 6.
 
 **Files:** Create `tests/contract/wake.test.ts`, `tests/contract/support.ts`
 
