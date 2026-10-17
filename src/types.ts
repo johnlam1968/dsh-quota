@@ -44,8 +44,16 @@ export interface PlanStatus {
   readonly error: string | null
 }
 
-/** What one session hit, and when. Scoped to a single live subscription. */
+/**
+ * What one session hit, and when. Scoped to a single live subscription.
+ *
+ * `window` is captured at failure time and is deliberately NOT re-derived from
+ * a later reading. By the time the reset arrives nothing is blocked any more,
+ * so a status snapshot at wake time cannot say which window expired — only
+ * this record can.
+ */
 export interface BlockRecord {
+  readonly window: QuotaWindow
   readonly model: string
   readonly since: number
   readonly code: string

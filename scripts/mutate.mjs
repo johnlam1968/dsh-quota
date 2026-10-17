@@ -1,14 +1,17 @@
 // Mutation proof runner.
 //
-// For each declared mutation: apply it, assert the suite goes RED, then revert
-// byte-identically with `git checkout`. A mutation that leaves the suite green
+// For each declared mutation: apply it, assert the suite goes RED, then restore
+// the original bytes from memory. A mutation that leaves the suite green
 // means the test it was supposed to kill does not actually cover that
 // behaviour — which is worse than no test, because it reads as coverage.
 //
 //   node scripts/mutate.mjs
 //
+// The revert is an in-memory write-back rather than a git checkout, so it is
+// byte-identical by construction and works on an untracked file.
+//
 // Exits non-zero if any mutation fails to break its suite, or if any revert
-// leaves the tree dirty.
+// leaves a tracked file dirty.
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -71,6 +74,41 @@ const MUTATIONS = [
     claim: 'slices are clamped into the configured interval bounds',
   },
   {
+    file: 'src/format.ts',
+    test: 'tests/unit/format.test.ts',
+    find: '  if (!usable) {',
+    replace: '  if (false) {',
+    claim: 'a blocked plan always says so',
+  },
+  {
+    file: 'src/format.ts',
+    test: 'tests/unit/format.test.ts',
+    find: '  if (!low || phrase === null) return \'\'',
+    replace: '  if (phrase === null) return \'\'',
+    claim: 'low usage speaks up, healthy usage stays silent',
+  },
+  {
+    file: 'src/format.ts',
+    test: 'tests/unit/format.test.ts',
+    find: 'work on something else, or wait for the reset.</provider-quota>`',
+    replace: '</provider-quota>`',
+    claim: 'the blocked line tells the agent not to retry in a loop',
+  },
+  {
+    file: 'src/notice.ts',
+    test: 'tests/unit/notice.test.ts',
+    find: '  return `the ${windowLabel(facts.record.window)} usage window`',
+    replace: "  return `the ${windowLabel(rowFor(facts.status.rows, facts.model, facts.spec, 'weekly')?.blocked === true ? 'weekly' : '5h')} usage window`",
+    claim: 'the reset window comes from the record, not a now-healthy status',
+  },
+  {
+    file: 'src/notice.ts',
+    test: 'tests/unit/notice.test.ts',
+    find: '${record.code} — ${record.message}',
+    replace: 'a provider-side usage limit',
+    claim: 'the announcement quotes what actually blocked the turn',
+  },
+  {
     file: 'src/block.ts',
     test: 'tests/unit/block.test.ts',
     find: '    pattern.lastIndex = 0\n',
@@ -111,12 +149,12 @@ for (const m of MUTATIONS) {
   if (changed === original) {
     console.error(`SKIP  ${m.file}: replacement was a no-op`)
     survived++
-    git('checkout', '--', m.file)
+    writeFileSync(m.file, original)
     continue
   }
 
   const result = runSuite(m.test)
-  git('checkout', '--', m.file)
+  writeFileSync(m.file, original)
 
   const reverted = readFileSync(m.file, 'utf8') === original
   if (!reverted) {
@@ -132,7 +170,7 @@ for (const m of MUTATIONS) {
   }
 }
 
-const dirty = git('status', '--porcelain').trim()
+const dirty = git('status', '--porcelain', '--untracked-files=no').trim()
 if (dirty !== '') {
   console.error(`\nworktree not clean after reverting:\n${dirty}`)
   process.exit(1)
