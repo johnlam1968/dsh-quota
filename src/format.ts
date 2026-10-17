@@ -51,12 +51,19 @@ function windowPhrase(status: PlanStatus, model: string, spec: DeriveSpec): stri
 
 /**
  * One line of quota state for the system prompt, or '' when there is nothing
- * worth spending prompt tokens on.
+ * to report.
  *
- * Silent in three cases, deliberately: never read yet, a read that failed, and
- * healthy-and-comfortable. An agent spends attention on this line, so it must
- * not become wallpaper — it appears when the model is blocked or when the
- * remaining budget is low enough to be worth pacing around.
+ * **Always on whenever we have a reading.** A session starts with no memory of
+ * the account, so its status has to be in context from the first turn — not
+ * only once the budget is nearly gone. An agent that learns about the ceiling
+ * when it hits it is an agent that already wasted the window.
+ *
+ * Silent in exactly two cases: never read yet, and a read that failed. Both are
+ * silence rather than a guess, because saying "exhausted" after a failed HTTP
+ * request would halt an agent over nothing.
+ *
+ * What is graded is the WORDING, not the presence: blocked says so plainly, a
+ * low window says to pace, a comfortable one just states the numbers.
  *
  * `usable` is computed by the same `derive` the tool and the wake edge use, so
  * the prompt can never contradict them.
@@ -73,10 +80,11 @@ export function renderQuotaStatus(
 
   const usable = isUsable(status, model, spec)
   const phrase = windowPhrase(status, model, spec)
+  if (phrase === null) return ''
 
   if (!usable) {
     return (
-      `<provider-quota>${phrase ?? 'usage window exhausted'}. `
+      `<provider-quota>${phrase}. `
       + `Requests to this provider are being refused until it resets; `
       + `this is a quota limit, not a fault. Do not retry in a loop — `
       + `work on something else, or wait for the reset.</provider-quota>`
@@ -86,11 +94,12 @@ export function renderQuotaStatus(
   const low = effectiveRows(status.rows, model, spec).some(
     row => !row.blocked && row.remainingPercent !== null && row.remainingPercent <= lowWaterMarkPercent,
   )
-  if (!low || phrase === null) return ''
 
-  return (
-    `<provider-quota>${phrase}. `
-    + `Usage is low enough to be worth pacing; `
-    + `save the remaining budget for work that needs this model.</provider-quota>`
-  )
+  return low
+    ? (
+        `<provider-quota>${phrase}. `
+        + `Usage is low enough to be worth pacing; `
+        + `save the remaining budget for work that needs this model.</provider-quota>`
+      )
+    : `<provider-quota>${phrase}. Requests to this provider are being accepted.</provider-quota>`
 }

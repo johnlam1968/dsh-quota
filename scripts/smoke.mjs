@@ -31,10 +31,15 @@ const config = {
 }
 
 const contexts = []
+const contextDefs = new Map()
 const tools = []
 let lastDefinition = null
 const systemPrompt = {
-  context(def) { contexts.push(def.name); return () => { const i = contexts.indexOf(def.name); if (i !== -1) contexts.splice(i, 1) } },
+  context(def) {
+    contexts.push(def.name)
+    contextDefs.set(def.name, def)
+    return () => { const i = contexts.indexOf(def.name); if (i !== -1) contexts.splice(i, 1) }
+  },
 }
 const toolRegistry = {
   register(def) { tools.push(def.name); lastDefinition = def; return () => { const i = tools.indexOf(def.name); if (i !== -1) tools.splice(i, 1) } },
@@ -138,14 +143,69 @@ if (!contexts.includes('quota-usage-status') || !tools.includes('quota_status'))
 }
 console.log('PASS  re-subscribed on the switch back')
 
-// The tool must answer through the same derivation the prompt uses.
+// The briefing is seeded ONCE, then goes quiet for the rest of the session.
+// This is the check that would have caught today's real confusion: a prompt
+// line that renders empty is indistinguishable, from the outside, from a
+// registration that never resolved — so silence has to be asserted on purpose,
+// not left to inference.
+{
+  // One successful read, so `renderQuotaStatus` has something to say.
+  process.env['DSH_QUOTA_SMOKE_KEY'] = 'stub'
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    base_resp: { status_code: 0, status_msg: 'success' },
+    // The measured field names: the windows are PARALLEL families on ONE entry,
+    // and the countdowns are `remains_time` / `weekly_remains_time`, not
+    // timestamps. A fixture that invents field names proves nothing.
+    model_remains: [{
+      model_name: 'general',
+      current_interval_status: 1,
+      current_interval_remaining_percent: 87,
+      remains_time: 3600,
+      current_weekly_status: 1,
+      current_weekly_remaining_percent: 100,
+      weekly_remains_time: 86400,
+    }],
+  }), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  await root.quota.refresh()
+  globalThis.fetch = realFetch
+
+  const def = contextDefs.get('quota-usage-status')
+  const first = def.text()
+  const second = def.text()
+  const third = def.text()
+
+  if (first === '' || !first.includes('<provider-quota>') || !first.includes('87')) {
+    console.error(`FAIL  the opening briefing did not carry the reading: ${JSON.stringify(first)}`)
+    process.exit(1)
+  }
+  console.log(`PASS  opening briefing carries the live reading: ${first.slice(0, 120)}…`)
+
+  if (second !== '' || third !== '') {
+    console.error(`FAIL  the briefing repeated after the first render: ${JSON.stringify([second, third])}`)
+    process.exit(1)
+  }
+  console.log('PASS  and is silent on every later step of the same session')
+}
+
+// The tool must answer through the same derivation the prompt uses — and now
+// that a reading exists, "known" must be true and both windows populated.
 const tool = lastDefinition
 const payload = await tool.execute({}, { name: 'quota_status', arguments: {}, signal: new AbortController().signal, agent })
-if (payload.known !== false || typeof payload.provider !== 'string' || Array.isArray(payload.windows) !== true) {
+const windows = Array.isArray(payload.windows) ? payload.windows : []
+if (
+  payload.known !== true
+  || typeof payload.provider !== 'string'
+  || payload.usable !== true
+  || windows.length !== 2
+  || !windows.some(w => w.window === '5h' && w.remainingPercent === 87 && typeof w.resetsInMs === 'number')
+  || !windows.some(w => w.window === 'weekly' && w.remainingPercent === 100)
+) {
   console.error(`FAIL  tool payload has the wrong shape: ${JSON.stringify(payload)}`)
   process.exit(1)
 }
-console.log(`PASS  tool executes and returns the declared shape: ${JSON.stringify(payload)}`)
+console.log(`PASS  tool agrees with the prompt line: ${JSON.stringify(payload)}`)
 
 await fiber.dispose()
 if (fiber.state !== 4) { console.error(`FAIL  dispose left state ${fiber.state}`); process.exit(1) }

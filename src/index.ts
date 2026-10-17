@@ -169,6 +169,8 @@ export default class QuotaService extends Service {
   private errorStreak = 0
   /** Session id → the disposers of its prompt line and tool, plus its model. */
   private readonly bound = new Map<SessionId, { model: string; disposers: Array<() => void> }>()
+  /** Sessions whose opening quota briefing has already been rendered. */
+  private readonly seeded = new Set<SessionId>()
   /** Built once at mount; see the constructor for why it is not per-session. */
   private readonly statusTool: ToolDefinition
   /** Used only when a tool call arrives with no agent, which should not happen. */
@@ -289,7 +291,28 @@ export default class QuotaService extends Service {
       agent.ctx.systemPrompt.context({
         name: 'quota-usage-status',
         order: 900,
-        text: () => renderQuotaStatus(this.latest, model, this.plan.derive, this.config.lowWaterMarkPercent),
+        // SEEDED ONCE per session, then never again — this is the opening
+        // briefing, not a standing line. A countdown written into a prompt is
+        // stale the moment it is read, and re-sending it every step would be
+        // wallpaper carrying wrong numbers. The tool is the live path.
+        //
+        // It is not marked as seeded until it actually renders something, so a
+        // session created before the first successful probe does not spend its
+        // one briefing on an empty string — it gets the next step instead.
+        text: () => {
+          if (this.seeded.has(agent.id)) return ''
+          // Read the model from the binding, not from this closure's capture: a
+          // model switch within the same plan updates `existing.model` without
+          // re-registering, so a captured `model` would go stale here.
+          const line = renderQuotaStatus(
+            this.latest,
+            this.bound.get(agent.id)?.model ?? model,
+            this.plan.derive,
+            this.config.lowWaterMarkPercent,
+          )
+          if (line !== '') this.seeded.add(agent.id)
+          return line
+        },
       }),
     )
     disposers.push(agent.ctx.tools.register(this.statusTool))
@@ -301,6 +324,8 @@ export default class QuotaService extends Service {
     const existing = this.bound.get(sessionId)
     if (existing === undefined) return
     this.bound.delete(sessionId)
+    // A session that comes back on the watched provider gets its briefing again.
+    this.seeded.delete(sessionId)
     for (const dispose of [...existing.disposers].reverse()) dispose()
   }
 

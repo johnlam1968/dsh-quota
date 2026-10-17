@@ -123,6 +123,8 @@ export default class QuotaService extends Service {
     private errorStreak;
     /** Session id → the disposers of its prompt line and tool, plus its model. */
     private readonly bound;
+    /** Sessions whose opening quota briefing has already been rendered. */
+    private readonly seeded;
     /** Built once at mount; see the constructor for why it is not per-session. */
     private readonly statusTool;
     /** Used only when a tool call arrives with no agent, which should not happen. */
