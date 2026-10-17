@@ -20,8 +20,8 @@ const MUTATIONS = [
   {
     file: 'src/probe.ts',
     test: 'tests/unit/probe.test.ts',
-    find: 'blocked: status === STATUS_BLOCKED || pct === 0,',
-    replace: 'blocked: status === STATUS_BLOCKED,',
+    find: "      blocked: narrowNumber(raw['current_interval_status']) === STATUS_EXHAUSTED || pct === 0,",
+    replace: '      blocked: pct === 0,',
     claim: 'zero remaining percent blocks even when status disagrees',
   },
   {
@@ -48,8 +48,8 @@ const MUTATIONS = [
   {
     file: 'src/derive.ts',
     test: 'tests/unit/derive.test.ts',
-    find: `  return (\n    rows.find(row => row.entry === model && row.window === window) ??\n    rows.find(row => row.entry === spec.entry && row.window === window)\n  )`,
-    replace: `  return rows.find(row => row.entry === spec.entry && row.window === window)`,
+    find: '    rows.find(row => row.entry === model && row.window === window) ??',
+    replace: '    undefined ??',
     claim: "a model's own row outranks the account-wide row",
   },
   {
