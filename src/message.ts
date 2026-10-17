@@ -9,6 +9,23 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 
 /**
+ * The producer identity carried by an announcement.
+ *
+ * Declared separately so `createQuotaNotice` can return a message whose
+ * `source` is known, rather than the whole `MessageSource` union — which
+ * includes `{ kind: 'user' }`, a variant with no `form`. Without this, every
+ * consumer has to narrow a union to read a field the producer just set.
+ */
+export interface QuotaNoticeSource {
+  readonly kind: 'quota-notice'
+  readonly form: 'notice'
+  readonly summary: string
+}
+
+/** An announcement message, narrowed to the source it always carries. */
+export type QuotaNotice = UserMessage & { readonly source: QuotaNoticeSource }
+
+/**
  * Build the announcement message without a runtime import of dsh-llm.
  *
  * `createUserMessage` is three lines — `deepFreeze(structuredClone({ ...input,
@@ -23,7 +40,7 @@ declare module '@deepseek-ai/dsh-llm' {
  * string, and the value passed is a `randomUUID()` this function just
  * generated — not external input being asserted into a shape.
  */
-export function createQuotaNotice(text: string, summary: string): UserMessage {
+export function createQuotaNotice(text: string, summary: string): QuotaNotice {
   const block: ContentBlock = Object.freeze({ type: 'text', text })
   const content: readonly ContentBlock[] = Object.freeze([block])
 
@@ -32,5 +49,5 @@ export function createQuotaNotice(text: string, summary: string): UserMessage {
     id: randomUUID() as MessageId,
     content,
     source: Object.freeze({ kind: 'quota-notice', form: 'notice', summary }),
-  }) as UserMessage
+  }) as QuotaNotice
 }

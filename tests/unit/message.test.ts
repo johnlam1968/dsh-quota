@@ -25,6 +25,7 @@ describe('createQuotaNotice', () => {
     expect(mine.role).toBe('user')
     expect(mine.source.kind).toBe('quota-notice')
     expect(mine.source.form).toBe('notice')
+    expect(mine.source.summary).toBe('reset')
   })
 
   // MUTATION: return a plain mutable object literal.
