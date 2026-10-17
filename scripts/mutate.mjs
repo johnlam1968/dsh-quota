@@ -235,6 +235,21 @@ const MUTATIONS = [
   {
     file: 'src/index.ts',
     test: 'tests/contract/wake.test.ts',
+    find: '      this.recordBlock(payload.agent.id, payload.failure, payload.provider)',
+    replace: '      this.recordBlock(payload.agent.id, payload.failure, payload.agent.options.provider)',
+    claim: 'the in-band channel judges a refusal by the route that served it',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: `    const agent = this.ctx.agents.get(notice.sessionId)
+    if (agent === undefined) return`,
+    replace: '    const agent = this.ctx.agents.get(notice.sessionId)',
+    claim: 'a session gone by the time the reset lands costs the row no tick',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
     find: `        return window
       }`,
     replace: `        return 'weekly'

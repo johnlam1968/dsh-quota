@@ -20,9 +20,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import QuotaService from '../../src/index.js'
+import type { PlanStatus } from '../../src/types.js'
 import type { Context } from '@deepseek-ai/cordis'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import { fakeAgents, makeRoot } from '../harness/root.js'
-import type { AgentsSeam } from '../harness/root.js'
+import type { AgentsSeam, FakeAgent } from '../harness/root.js'
 import {
   QUOTA_REFUSAL,
   RATE_LIMIT,
@@ -36,7 +38,7 @@ import {
   wakeAgent,
   wakeConfig,
 } from './support.js'
-import type { ScriptedEndpoint, WakeAgent } from './support.js'
+import type { ScriptedEndpoint } from './support.js'
 
 /**
  * The countdown the provider reports for the exhausted window, in ms.
@@ -88,10 +90,26 @@ async function mount(bodies: readonly (string | undefined)[]): Promise<Mounted> 
 }
 
 /** One session on the watched route, registered so the row can resolve it. */
-function session(agents: AgentsSeam, id = 'session-a', model = 'minimax-M2'): WakeAgent {
+function session(agents: AgentsSeam, id = 'session-a', model = 'minimax-M2'): FakeAgent {
   const agent = wakeAgent(id, { provider: wakeConfig.provider, model })
   agents.add(agent)
   return agent
+}
+
+/** Everything this session was woken with, in order. */
+function wakes(agents: AgentsSeam, sessionId: string): readonly UserMessage[] {
+  return agents.delivered
+    .filter(delivery => delivery.sessionId === sessionId)
+    .map(delivery => delivery.message)
+}
+
+/** The one announcement this session received; fails the case if there is not exactly one. */
+function onlyWake(agents: AgentsSeam, sessionId: string): UserMessage {
+  const messages = wakes(agents, sessionId)
+  if (messages.length !== 1) {
+    throw new Error(`expected exactly one announcement for ${sessionId}, got ${messages.length}`)
+  }
+  return messages[0] as UserMessage
 }
 
 describe('a session refused in band, through agent/request-error', () => {
@@ -107,7 +125,7 @@ describe('a session refused in band, through agent/request-error', () => {
     // One timer, armed by the row's effect — not one per read.
     expect(vi.getTimerCount()).toBe(1)
     expect(endpoint.calls()).toBe(1)
-    expect(agent.followups).toHaveLength(0)
+    expect(wakes(agents, agent.id)).toHaveLength(0)
 
     emitRequestError(root, agent, QUOTA_REFUSAL)
 
@@ -116,17 +134,16 @@ describe('a session refused in band, through agent/request-error', () => {
     // all, so the timer count is asserted alongside it.
     await vi.advanceTimersByTimeAsync(RESET_MS - 1)
     expect(endpoint.calls()).toBe(1)
-    expect(agent.followups).toHaveLength(0)
+    expect(wakes(agents, agent.id)).toHaveLength(0)
     expect(vi.getTimerCount()).toBe(1)
 
     // Exactly one read at the boundary, and it is the one that resets.
     await vi.advanceTimersByTimeAsync(1)
     await vi.advanceTimersByTimeAsync(FIRST_READ)
     expect(endpoint.calls()).toBe(2)
-    expect(agent.followups).toHaveLength(1)
+    expect(wakes(agents, agent.id)).toHaveLength(1)
 
-    const message = agent.followups[0]
-    if (message === undefined) throw new Error('no announcement was delivered')
+    const message = onlyWake(agents, agent.id)
     expect(message.source.kind).toBe('quota-notice')
     const text = announcementText(message)
     // The announcement names the refusal that ended the turn, so the agent can
@@ -160,7 +177,63 @@ describe('a session refused in band, through agent/request-error', () => {
     // survived the delegation rather than being dropped with it.
     await vi.advanceTimersByTimeAsync(RESET_MS)
     await vi.advanceTimersByTimeAsync(FIRST_READ)
-    expect(agent.followups).toHaveLength(1)
+    expect(wakes(agents, agent.id)).toHaveLength(1)
+  })
+
+  it('ignores a refusal the payload attributes to another route', async () => {
+    vi.useFakeTimers()
+    process.env['DSH_QUOTA_TEST_KEY'] = 'test-key'
+    const { root, agents, endpoint } = await mount([
+      blockedBody(RESET_MS),
+      healthyBody(3_600_000),
+    ])
+    const agent = session(agents)
+
+    // The other half of the filter, and the half a regression is easiest to
+    // lose: the in-band channel DOES name the route that served the failed
+    // request, so the row can — and must — judge the refusal by THAT route and
+    // not by the agent's current one. Substituting `agent.options.provider`
+    // here is invisible on every other case (a session on the watched route
+    // agrees with itself) and would wake fallback sessions on this plan's
+    // reset, which is a reset those sessions were never waiting for.
+    emitRequestError(root, agent, QUOTA_REFUSAL, 'openrouter')
+    await vi.advanceTimersByTimeAsync(RESET_MS)
+    await vi.advanceTimersByTimeAsync(FIRST_READ)
+
+    // The reset was read; nothing was said.
+    expect(endpoint.calls()).toBe(2)
+    expect(wakes(agents, agent.id)).toHaveLength(0)
+  })
+})
+
+describe('a session that is gone by the time the reset lands', () => {
+  it('reads the reset, tells nobody, and keeps probing', async () => {
+    vi.useFakeTimers()
+    process.env['DSH_QUOTA_TEST_KEY'] = 'test-key'
+    const { root, agents, endpoint } = await mount([
+      blockedBody(RESET_MS),
+      healthyBody(3_600_000),
+    ])
+    const agent = session(agents)
+    const published: PlanStatus[] = []
+    root.on('quota/changed', ({ status }) => published.push(status))
+
+    emitRequestError(root, agent, QUOTA_REFUSAL)
+    // The session goes away while its window is still exhausted: disposed,
+    // cleared, host shutdown. The row holds a record for it and will resolve a
+    // notice — it must resolve the session instead, quietly.
+    agent.kill()
+    await vi.advanceTimersByTimeAsync(RESET_MS)
+    await vi.advanceTimersByTimeAsync(FIRST_READ)
+
+    expect(wakes(agents, agent.id)).toHaveLength(0)
+    expect(endpoint.calls()).toBe(2)
+    // The tick ran to the end rather than throwing at the missing session: a
+    // throw here would abort the read before the row publishes it, and
+    // `armTimer` would swallow it into a silent backoff to the ceiling — the
+    // failure mode is invisible except as a status the row never announced.
+    expect(published).toHaveLength(1)
+    expect(vi.getTimerCount()).toBe(1)
   })
 })
 
@@ -188,8 +261,8 @@ describe('a session stranded by a thrown failure, through agent/error', () => {
     await vi.advanceTimersByTimeAsync(FIRST_READ)
 
     expect(endpoint.calls()).toBe(2)
-    expect(agent.followups).toHaveLength(1)
-    expect(announcementText(agent.followups[0]!)).toContain('QUOTA — 2056 usage limit exceeded')
+    expect(wakes(agents, agent.id)).toHaveLength(1)
+    expect(announcementText(onlyWake(agents, agent.id))).toContain('QUOTA — 2056 usage limit exceeded')
   })
 
   it('ignores a failure from a route this plan does not watch', async () => {
@@ -213,7 +286,7 @@ describe('a session stranded by a thrown failure, through agent/error', () => {
     // The reset was still read — the row is awake and did its work.
     expect(endpoint.calls()).toBe(2)
     // ...and it said nothing to a session this plan never blocked.
-    expect(elsewhere.followups).toHaveLength(0)
+    expect(wakes(agents, elsewhere.id)).toHaveLength(0)
   })
 
   it('records the failure when the agent states no route at all', async () => {
@@ -232,7 +305,7 @@ describe('a session stranded by a thrown failure, through agent/error', () => {
     await vi.advanceTimersByTimeAsync(RESET_MS)
     await vi.advanceTimersByTimeAsync(FIRST_READ)
 
-    expect(unrouted.followups).toHaveLength(1)
+    expect(wakes(agents, unrouted.id)).toHaveLength(1)
   })
 
   it('ignores a failure that is not an exhausted window', async () => {
@@ -252,7 +325,7 @@ describe('a session stranded by a thrown failure, through agent/error', () => {
     await vi.advanceTimersByTimeAsync(FIRST_READ)
 
     expect(endpoint.calls()).toBe(2)
-    expect(agent.followups).toHaveLength(0)
+    expect(wakes(agents, agent.id)).toHaveLength(0)
     expect(vi.getTimerCount()).toBe(1)
   })
 
@@ -277,17 +350,19 @@ describe('a session stranded by a thrown failure, through agent/error', () => {
     // The read at the boundary was retried and never became readable; that
     // cost one attempt per configured try, and announced nothing.
     expect(endpoint.calls()).toBe(1 + wakeConfig.readAttempts)
-    expect(agent.followups).toHaveLength(0)
+    expect(wakes(agents, agent.id)).toHaveLength(0)
 
-    // The row backed off on its own failure rather than on provider state...
-    const backoff = wakeConfig.schedule.baseBackoffMs * 2
-    await vi.advanceTimersByTimeAsync(backoff - 1)
-    expect(endpoint.calls()).toBe(1 + wakeConfig.readAttempts)
-    // ...and the very next readable status still finds the session owed.
-    await vi.advanceTimersByTimeAsync(1)
+    // HOW LONG it waits is the schedule's business, and this case must not
+    // encode that shape — the backoff is covered by `schedule.test.ts`, and a
+    // contract case that fails because the multiplier changed would be a
+    // false alarm about the wiring. What matters is that it comes back on its
+    // own within the ceiling it configured for itself...
+    await vi.advanceTimersByTimeAsync(wakeConfig.schedule.maxBackoffMs)
     await vi.advanceTimersByTimeAsync(FIRST_READ)
-    expect(agent.followups).toHaveLength(1)
-    expect(announcementText(agent.followups[0]!)).toContain('has reset')
+    expect(endpoint.calls()).toBe(2 + wakeConfig.readAttempts)
+    // ...and that the very next readable status still finds the session owed.
+    expect(wakes(agents, agent.id)).toHaveLength(1)
+    expect(announcementText(onlyWake(agents, agent.id))).toContain('has reset')
   })
 })
 

@@ -95,35 +95,24 @@ export function unreadableRead(): undefined[] {
   return Array.from({ length: testConfig.readAttempts }, () => undefined)
 }
 
-/** A session the row can resolve, plus the wakeups it received. */
-export interface WakeAgent extends FakeAgent {
-  /** Every message `followup` was handed, in order. */
-  readonly followups: UserMessage[]
-  followup(message: UserMessage): void
-}
-
 /**
- * A session stub with a recording `followup`.
+ * A session stub for the registry.
  *
- * `deliver` calls `followup`, so without it the row's reset announcement would
- * be a `TypeError` and the case would prove nothing. `options.provider` is
- * optional because the `agent/error` channel carries no provider: the row can
- * only consult the agent's own route there, and "no route at all" is one of
- * the cases that must be handled.
+ * `options.provider` is optional because the `agent/error` channel carries no
+ * provider: the row can only consult the agent's own route there, and "no
+ * route at all" is one of the cases that must be handled. `followup` is the
+ * agent's own half of the surface; the harness seam records every call before
+ * handing it on, so a fake that wants a delivery to fail can still fail it.
  */
 export function wakeAgent(
   id: string,
   options: { provider?: string; model?: string },
-): WakeAgent {
-  const followups: UserMessage[] = []
+): FakeAgent {
   return {
     id,
     options,
     status: 'idle',
-    followups,
-    followup(message: UserMessage): void {
-      followups.push(message)
-    },
+    followup(): void {},
     kill(): void {},
   }
 }
@@ -137,7 +126,7 @@ export function wakeAgent(
  * real `Agent`, would mean constructing a session, an inbox and a driver to
  * watch a row read three fields.
  */
-function asAgent(agent: WakeAgent): Agent {
+function asAgent(agent: FakeAgent): Agent {
   return agent as unknown as Agent
 }
 
@@ -161,7 +150,7 @@ export function announcementText(message: UserMessage): string {
  */
 export function emitRequestError(
   ctx: Context,
-  agent: WakeAgent,
+  agent: FakeAgent,
   failure: LlmFailure,
   provider: string = testConfig.provider,
 ): ReturnType<typeof vi.fn<() => Promise<undefined>>> {
@@ -182,7 +171,7 @@ export function emitRequestError(
  * Emit the thrown-failure channel, which carries the error verbatim and no
  * `failure` field at all — the row has to narrow `unknown` itself.
  */
-export function emitAgentError(ctx: Context, agent: WakeAgent, error: unknown): void {
+export function emitAgentError(ctx: Context, agent: FakeAgent, error: unknown): void {
   ctx.emit('agent/error', { agent: asAgent(agent), turn: 1, step: 1, error })
 }
 

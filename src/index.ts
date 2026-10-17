@@ -238,9 +238,21 @@ export default class QuotaService extends Service {
   /**
    * Remember that a session was refused, so its reset can wake it.
    *
-   * `provider` is the route that served the failed request. A failure from a
-   * route this row does not watch is not ours to record — a blocked session
-   * on a fallback provider must not be woken by this plan's reset.
+   * A failure from a route this row does not watch is not ours to record — a
+   * blocked session on a fallback provider must not be woken by this plan's
+   * reset.
+   *
+   * `provider` is the route the failure is ATTRIBUTED to, and the two channels
+   * do not supply it the same way: `agent/request-error` carries the route
+   * that served the failed request, while `agent/error` carries none and its
+   * caller passes the agent's CURRENT route.
+   *
+   * That leaves one accepted limitation on `agent/error`: a session that
+   * changed route between the failure and its surfacing is judged by the route
+   * it holds now, which can drop a real block — the session is never woken — or
+   * attribute a foreign one. Dropping the filter instead would trade that for
+   * a wake on every unrelated error, and an advisory row that stays quiet
+   * unless its own window ran out is worth more than one that never misses.
    */
   private recordBlock(
     sessionId: SessionId,
