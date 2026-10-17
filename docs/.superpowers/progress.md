@@ -19,7 +19,7 @@ Runtime: dsh `0.1.7-rc.2`, Cordis `4.0.4`, schemastery `3.18.4`.
 | 9 | Contract tier | **not started** — planned |
 | — | Peer cross-check fixes | done, 4 items |
 
-`93 tests · 24/24 mutations killed · typecheck clean` as of `4d8e1f5`.
+`93 tests · 24/24 mutations killed · typecheck clean` as of `f74aec6`.
 
 ## Test tiers, adopted from `feat/quota-impl`
 

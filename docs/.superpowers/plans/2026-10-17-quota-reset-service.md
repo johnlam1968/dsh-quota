@@ -62,7 +62,7 @@ Two rules from it that this plan had wrong:
 
 ---
 
-### Task 0: The lifecycle gate — DONE, shipped in `4d8e1f5`
+### Task 0: The lifecycle gate — DONE, shipped in `f74aec6`
 
 Written and passing before any further work, because it is the precondition for
 trusting every later tier. See `tests/harness/root.ts` and
