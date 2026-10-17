@@ -40,7 +40,41 @@
 | `src/index.ts` | + subscription wiring | **Task 6** |
 | `scripts/build.mjs` | esbuild + the runtime-import allowlist assertion | **Task 7** |
 | `cordis.patch.yml` | The composition row | **Task 8** |
-| `tests/harness/*` | Mount gate and the two failure channels | **Task 9** |
+| `tests/support/partial.ts` | The one named cast for schemastery "input typed as output" | **done** |
+| `tests/harness/root.ts` | The single real `Context` assembly for tests | **done** |
+| `tests/harness/mount.test.ts` | Lifecycle gate: mount / inert / re-apply / dispose / ownership | **done** |
+| `tests/contract/*.test.ts` | The row driven through real Cordis events | **Task 9** |
+
+## Test tiers
+
+Adopted from `feat/quota-impl`'s suite, which is further along and better factored than this plan was.
+
+| Tier | Mounts | Drives | Proves |
+|---|---|---|---|
+| `unit/` | nothing | pure functions | behaviour of a decision |
+| `contract/` | a real `Context` | `ctx.emit(...)`, stubbed globals | that the wiring calls the behaviour |
+| `harness/` | a real `Context` | lifecycle only | that the row mounts, updates, disposes, owns its effects |
+
+Two rules from it that this plan had wrong:
+
+- **The gate is not a late task.** `feat/quota-impl` runs its mount gate "from Task 1 onward", because two P0 defects there were lifecycle defects a plain-object `ctx` mock cannot see. This plan had it last; it is now written and shipped (Tasks 0 below).
+- **No case calls a handler directly.** Every contract case goes through `ctx.emit`, because calling a handler directly "would prove the handler body and nothing about whether anything calls it". That is precisely the discipline `src/index.ts` currently lacks.
+
+---
+
+### Task 0: The lifecycle gate — DONE, shipped in `4d8e1f5`
+
+Written and passing before any further work, because it is the precondition for
+trusting every later tier. See `tests/harness/root.ts` and
+`tests/harness/mount.test.ts`. Two things it caught immediately:
+
+- `Context.plugin()` does **not** take `exports.default ?? exports`. A namespace
+  import of a Service class hands it an object with no `apply` and it refuses
+  to mount. The Loader's `??` is a *Loader* convenience, not Cordis'.
+- `fiber.update()` is typed `void` and restarts behind the async
+  `internal/update` waterfall, so `await fiber.update(...)` awaits `undefined`
+  and reads the fiber mid-`UNLOADING`. The gate polls for the settled state and
+  then asserts it, so a stuck fiber fails rather than passing quietly.
 
 ---
 
@@ -361,36 +395,58 @@ Run: `dsh --profile web --dump-config` and confirm a `# == dsh-quota` layer mark
 
 ---
 
-### Task 9: The mount gate
+### Task 9: The contract tier
 
-**Files:** Create `tests/harness/root.ts`, `tests/harness/mount.test.ts`
+**Files:** Create `tests/contract/wake.test.ts`, `tests/contract/support.ts`
 
-- [ ] **Step 1: Write the mount gate**
+The gate is done; this is the tier that closes the wiring gap in `src/index.ts`.
+No case may call a handler directly — every one goes through `ctx.emit` on a
+real `Context`, which is the only thing that proves something *calls* it.
 
-A missing hard dependency is **silent**: without its injected service a row's fiber sits at `PENDING`, `plugin()` does not throw, `await` resolves, and the row is inert while looking mounted. Every unit test would pass. So:
+- [ ] **Step 1: A scripted endpoint, shared**
 
-```ts
-expect(fiber.state).toBe(2) // FiberState.ACTIVE
-```
+Reuse the pattern: "answer with each read in turn; the last one repeats;
+`undefined` = unreadable", via `vi.stubGlobal('fetch', …)` plus
+`vi.useFakeTimers()`. Globals rather than injected seams, deliberately — an
+injected clock or fetch handle is a knob that can be wired wrong.
 
-Pass the `agents` fake through the harness root's `extra`.
+- [ ] **Step 2: The two failure channels, through real events**
 
-- [ ] **Step 2: Close the wiring gap from Task 6**
+Emit a synthetic `agent/request-error` and a synthetic `agent/error` and assert
+each records a block. **This is what makes a mutation deleting the
+`agent/error` listener die** — `find` is the whole `this.ctx.on('agent/error', …)`
+block, `replace` is empty.
 
-Emit a synthetic `agent/request-error` and a synthetic `agent/error` through the mounted fiber and assert each records a block. **This is what makes a mutation deleting the `agent/error` listener die** — the mutation `find` is the whole `this.ctx.on('agent/error', …)` block, `replace` is empty.
+- [ ] **Step 3: Assert the waterfall is delegated**
 
-- [ ] **Step 3: Add the mutation and run the full proof**
+`agent/request-error` is a waterfall. Assert `next` was called, so the failure
+stays retryable. The row is advisory; a listener that swallows `next` would
+silently make every quota refusal terminal.
+
+- [ ] **Step 4: Assert on non-actions, not just outcomes**
+
+`expect(vi.getTimerCount()).toBe(0)` — not merely "did not wake", but "did not
+arm". And advance to `resetMs - 1` for "no wake before the window rolls", then
+`resetMs` for exactly one.
+
+- [ ] **Step 5: Route filtering on `agent/error`**
+
+That payload has no `provider`, so the row trusts `agent.options`. Assert a
+failure from another provider is ignored, and that the check is the agent's own
+route.
+
+- [ ] **Step 6: Run the full proof**
 
 ```bash
-node scripts/mutate.mjs
+pnpm typecheck && pnpm test && node scripts/mutate.mjs
 ```
-Expected: every mutation killed, including the new `agent/error` one.
+Expected: every mutation killed, including the two new ones from steps 2 and 3.
 
 ---
 
 ## Self-Review
 
-**Spec coverage.** §5 edge → Task 1/3, verified. §6 classification → Task 3, verified. §7 two channels → Task 6, tested Task 9. §8 subscription → Tasks 4–6. §9 multi-provider → out of scope by the user's instruction, recorded in spec §9. §10 constraints → Global Constraints. §11 gaps → Tasks 9 (channels), none for the weekly field (correctly a one-row change), Task 9's second case for the `agent.options` trust.
+**Spec coverage.** §5 edge → Tasks 1/3, verified. §6 classification → Task 3, verified. §7 two channels → Task 6, tested Task 9. §8 subscription → Tasks 4–6. §9 multi-provider → out of scope by the user's instruction, recorded in spec §9. §10 constraints → Global Constraints. §11 gaps → Task 9 closes the channel gap and the `agent.options` trust; the weekly field path is correctly a one-row change with no task.
 
 **Placeholder scan.** No TBD, no "similar to Task N". Task 5's `defineTool` body is elided; it is mechanical given `statusPayload`, `render`, and `output.schema` above it, and the implementer has the README section to hand. Flag it rather than let it be guessed wrong.
 

@@ -14,10 +14,57 @@ Runtime: dsh `0.1.7-rc.2`, Cordis `4.0.4`, schemastery `3.18.4`.
 | 1 | Pure core — `probe` `derive` `schedule` `block` | done, 12 mutations |
 | 2 | Rendering — `format` `notice` | done, 6 mutations |
 | 3 | Service — `config` `state` `index` | done, 6 mutations |
+| 0 | Lifecycle gate — `tests/harness/` | done, 6 cases |
 | 4–5 | Subscription + composition | **not started** — planned |
+| 9 | Contract tier | **not started** — planned |
 | — | Peer cross-check fixes | done, 4 items |
 
-`87 tests · 24/24 mutations killed · typecheck clean` as of `e0ac857`.
+`93 tests · 24/24 mutations killed · typecheck clean` as of `4d8e1f5`.
+
+## Test tiers, adopted from `feat/quota-impl`
+
+Its suite is further along and better factored than the plan this branch started
+from. Three tiers, each proving a different thing:
+
+| Tier | Mounts | Drives | Proves |
+|---|---|---|---|
+| `unit/` | nothing | pure functions | the behaviour of a decision |
+| `contract/` | a real `Context` | `ctx.emit(...)`, stubbed globals | that the wiring *calls* the behaviour |
+| `harness/` | a real `Context` | lifecycle only | that the row mounts, updates, disposes, owns its effects |
+
+Rules taken verbatim in spirit:
+
+- **The gate is not a late task.** `feat/quota-impl` runs its mount gate "from
+  Task 1 onward", because two P0 defects there were lifecycle defects a
+  plain-object `ctx` mock cannot see. This branch's plan had it last; it is now
+  written and passing.
+- **No case calls a handler directly** — it "would prove the handler body and
+  nothing about whether anything calls it". This is exactly the discipline
+  `src/index.ts` lacks today.
+- **Globals, not injected seams.** "Each one is a knob that can be wired wrong."
+  A scripted `fetch` plus `vi.useFakeTimers()` tests the real call path.
+- **Assert on non-actions, not just outcomes.** `expect(vi.getTimerCount()).toBe(0)`
+  — not merely "did not wake", but "did not arm".
+- **Assert the waterfall is delegated.** `agent/request-error` is a waterfall;
+  swallowing `next` would silently make every quota refusal terminal.
+
+## Cordis facts the gate established
+
+- **`Context.plugin()` does NOT take `exports.default ?? exports`.** That is a
+  *Loader* convenience. A namespace import of a Service class hands `plugin()` an
+  object with no `apply` and it refuses to mount. Caught on the first run.
+- **`fiber.update()` is typed `void`** and restarts behind the async
+  `internal/update` waterfall, so `await fiber.update(...)` awaits `undefined`
+  and reads the fiber mid-`UNLOADING` (state 5). Poll for the settled state, then
+  assert it — otherwise a stuck fiber passes quietly.
+- **`FiberState` is an ambient `const enum`** whose members `isolatedModules`
+  forbids reading; the numbers are written out.
+- **`makeRoot` must merge `extra` before the first `provide`** — cordis refuses
+  to provide a name twice in one scope, so an override must win the merge rather
+  than overwrite an already-registered default.
+- **`new Context()` is the whole harness.** Services resolve through the proxy
+  and fibers own their effects exactly as under `dsh web`, so `apply` fails in
+  the test rather than at deployment.
 
 ## Rulings worth not re-deriving
 
@@ -46,10 +93,15 @@ Runtime: dsh `0.1.7-rc.2`, Cordis `4.0.4`, schemastery `3.18.4`.
 
 ## Open gaps
 
-- **`src/index.ts` has no test.** A mutation deleting the `agent/error` listener would survive today. Task 9 closes this by emitting synthetic events through a mounted fiber.
+- **`src/index.ts` has no behaviour test.** The lifecycle gate (Task 0) mounts,
+  updates, disposes and proves the timer is owned — but nothing yet exercises a
+  probe, a failure or a delivery. A mutation deleting the `agent/error` listener
+  still survives. Task 9's contract tier closes it.
 - **The weekly window's field path is unconfirmed.** `derive.ts` treats an absent weekly row as "not blocked" — the only safe direction. Adding it is one row in `classifyQuota`.
 - **`agent/error` carries no provider**, so that channel trusts `agent.options`. A session whose effective route differs from its options could be recorded against the wrong plan. Task 9's second case should exercise it.
 
 ## Next
 
-Task 4 — the pure reconcile reducer. Smallest unit with its own test cycle; `decideBinding` is a four-case decision table.
+Task 9 first, not Task 4. The contract tier is what makes any later claim about
+`src/index.ts` mean something, and it is cheap: the harness root already exists.
+Then Task 4 — the pure reconcile reducer, a four-case decision table.
