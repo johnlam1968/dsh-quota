@@ -185,13 +185,79 @@ const MUTATIONS = [
     replace: '',
     claim: 'a stateful /g pattern stays stable across calls',
   },
+  // --- Task 9a: the contract tier -----------------------------------------
+  // These kill the wiring in `src/index.ts`, which no unit test can reach: the
+  // listeners are reached only through a real dispatch, and a case that called
+  // one directly would still pass with the registration deleted.
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: `    this.ctx.on('agent/error', ({ agent, error }) => {
+      const failure = narrowFailure(error)
+      // No provider on this channel, so only the current route can be
+      // checked. A session on another route cannot have been blocked by this
+      // plan's quota in the first place.
+      this.recordBlock(agent.id, failure, agent.options.provider)
+    })
+
+`,
+    replace: '',
+    claim: 'a thrown failure wakes its session — the agent/error channel is observed at all',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: '      return await next()',
+    replace: '      return undefined',
+    claim: 'the request-error waterfall is delegated, so the refusal stays retryable',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: '      this.recordBlock(agent.id, failure, agent.options.provider)',
+    replace: '      this.recordBlock(agent.id, failure, undefined)',
+    claim: 'the agent/error channel filters on the agent\'s own route',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: '    if (!matchesBlock(failure, this.plan.blockPatterns)) return\n',
+    replace: '',
+    claim: 'a rate limit is not an exhausted window, and records nothing',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: "      return { code: f['code'], message: f['message'], ...(status === undefined ? {} : { status }) }",
+    replace: "      return { code: 'UNKNOWN', message: String(error) }",
+    claim: 'a thrown LlmError keeps its own normalised failure',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: `        return window
+      }`,
+    replace: `        return 'weekly'
+      }`,
+    claim: 'the record names the window that actually gated this model',
+  },
+  {
+    file: 'src/index.ts',
+    test: 'tests/contract/wake.test.ts',
+    find: `    // Read once immediately: the first status should not wait out a delay.
+    void this.tick().then(
+      schedule => arm(schedule.delayMs),`,
+    replace: `    void this.tick().then(
+      schedule => arm(schedule.delayMs * 2),`,
+    claim: 'the first wake is armed at the boundary the provider reported',
+  },
 ]
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' })
 
-function runSuite(test) {
+function runSuite(...tests) {
   try {
-    execFileSync('pnpm', ['exec', 'vitest', 'run', test], { stdio: 'pipe', encoding: 'utf8' })
+    execFileSync('pnpm', ['exec', 'vitest', 'run', ...tests], { stdio: 'pipe', encoding: 'utf8' })
     return { green: true }
   } catch (error) {
     const out = `${error.stdout ?? ''}${error.stderr ?? ''}`
@@ -199,7 +265,10 @@ function runSuite(test) {
   }
 }
 
-const before = runSuite('tests/unit')
+// Every tier the runner mutates, not just the unit one: a mutation is only
+// "killed" if its suite was green BEFORE it, and a contract suite that was
+// already red would report every wiring mutation as a kill.
+const before = runSuite('tests/unit', 'tests/harness', 'tests/contract')
 if (!before.green) {
   console.error('FATAL: the suite is not green before mutating. Fix that first.')
   process.exit(1)
