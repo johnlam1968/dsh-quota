@@ -26,6 +26,18 @@ describe('Config', () => {
     expect(config.lowWaterMarkPercent).toBe(20)
     expect(config.schedule.divisor).toBe(4)
     expect(config.schedule.minIntervalMs).toBe(15_000)
+    // Guards the hand-written QuotaConfig against schema drift: definePlan
+    // reads all of these, so a field present in one and missing from the
+    // other must fail here rather than arriving as undefined at runtime.
+    expect(Object.keys(config).sort()).toEqual([
+      'authEnv', 'blockPatterns', 'endpoint', 'entry', 'lowWaterMarkPercent',
+      'markerPath', 'provider', 'readAttempts', 'requestTimeoutMs', 'schedule',
+      'videoModelPatterns',
+    ])
+    expect(Object.keys(config.schedule).sort()).toEqual([
+      'baseBackoffMs', 'divisor', 'jitterRatio', 'maxBackoffMs',
+      'maxIntervalMs', 'minIntervalMs', 'skewMs',
+    ])
     expect(config.blockPatterns).toContain('usage limit exceeded')
     expect(config.blockPatterns).toContain('\\b2056\\b')
   })

@@ -64,8 +64,38 @@ export const Config = z.object({
   markerPath: z.string().default(''),
 })
 
-/** `Schemastery` is a global namespace declared by the schemastery types. */
-export type QuotaConfig = Schemastery.ObjectT<typeof Config>
+/**
+ * The validated shape of `Config`.
+ *
+ * Written out rather than inferred from the schema on purpose: schemastery's
+ * `ObjectT` intersects with `Dict`, which poisons every downstream `Partial<>`
+ * and gives error messages about `constructor`. The cost is that this and the
+ * schema above must be kept in step by hand — `definePlan` reads every field
+ * below, and the defaults test asserts each one is present after a resolve, so
+ * a field added to one and not the other fails a test rather than reading as
+ * `undefined` at runtime.
+ */
+export interface QuotaConfig {
+  provider: string
+  entry: string
+  endpoint: string
+  authEnv: string
+  requestTimeoutMs: number
+  readAttempts: number
+  videoModelPatterns: string[]
+  blockPatterns: string[]
+  lowWaterMarkPercent: number
+  schedule: {
+    divisor: number
+    minIntervalMs: number
+    maxIntervalMs: number
+    skewMs: number
+    baseBackoffMs: number
+    maxBackoffMs: number
+    jitterRatio: number
+  }
+  markerPath: string
+}
 
 /** Compiled from config once, at construction. */
 export interface PlanDefinition {
