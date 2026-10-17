@@ -119,10 +119,11 @@ export default class QuotaService extends Service {
     /**
      * The `quota_status` tool.
      *
-     * The schema below is validated against `defineTool`'s guard: a nullable
-     * field is `oneOf: [{type:'number'},{type:'null'}]` and never
-     * `type: ['number','null']`, the parameter map is an implicit open object,
-     * and every nested object node declares `additionalProperties` explicitly.
+     * Two rules the guard enforces here, both found by loading the built bundle
+     * rather than by reading docs: a nullable field is
+     * `oneOf: [{type:'number'},{type:'null'}]` and never `type: ['number','null']`,
+     * and an `output.schema` object node carries NO `required` — the value schema
+     * DSL rejects it at registration.
      */
     private buildStatusTool;
     /** The one payload the tool and the prompt line both derive from. */

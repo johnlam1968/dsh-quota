@@ -101,11 +101,12 @@ interface StatusPayload {
 /**
  * The shape `defineTool` INFERRS from `output.schema`.
  *
- * `InferValue` does not read the `required` array on an object node, so every
- * property arrives optional even though the schema marks four of them
- * required. Rather than cast at the boundary, the renderer states the looser
- * shape it actually receives and tolerates the absent fields — the tool's own
- * runtime validation still enforces the declared schema on every call.
+ * `output.schema` is a VALUE schema spec, whose object nodes accept only
+ * `type`, `properties` and `additionalProperties` — `required` is rejected at
+ * registration with "schema.required is not supported by the value schema DSL".
+ * Every property therefore arrives optional. Rather than cast at the boundary,
+ * the renderer states the looser shape it receives and tolerates the absent
+ * fields; `execute` still returns every field.
  */
 interface InferredStatus {
   readonly usable?: boolean | undefined
@@ -266,10 +267,11 @@ export default class QuotaService extends Service {
   /**
    * The `quota_status` tool.
    *
-   * The schema below is validated against `defineTool`'s guard: a nullable
-   * field is `oneOf: [{type:'number'},{type:'null'}]` and never
-   * `type: ['number','null']`, the parameter map is an implicit open object,
-   * and every nested object node declares `additionalProperties` explicitly.
+   * Two rules the guard enforces here, both found by loading the built bundle
+   * rather than by reading docs: a nullable field is
+   * `oneOf: [{type:'number'},{type:'null'}]` and never `type: ['number','null']`,
+   * and an `output.schema` object node carries NO `required` — the value schema
+   * DSL rejects it at registration.
    */
   private buildStatusTool(model: string): ToolDefinition {
     return defineTool({
@@ -299,11 +301,9 @@ export default class QuotaService extends Service {
                   remainingPercent: { oneOf: [{ type: 'number' }, { type: 'null' }] },
                   resetsInMs: { oneOf: [{ type: 'number' }, { type: 'null' }] },
                 },
-                required: ['window', 'blocked', 'remainingPercent', 'resetsInMs'],
               },
             },
           },
-          required: ['known', 'provider', 'usable', 'windows'],
         },
         render: (_args, value) => [{ type: 'text', text: renderStatusReport(value) }],
       },
