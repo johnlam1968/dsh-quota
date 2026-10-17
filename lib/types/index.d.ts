@@ -1,6 +1,5 @@
 import { Service } from '@deepseek-ai/cordis';
 import type { Context } from '@deepseek-ai/cordis';
-import type { SessionId } from '@deepseek-ai/dsh-session';
 import type { QuotaConfig } from './config.js';
 import type { PlanStatus } from './types.js';
 declare module '@deepseek-ai/cordis' {
@@ -111,8 +110,17 @@ export default class QuotaService extends Service {
     }>>, "plain">;
     private readonly config;
     private readonly plan;
-    private state;
-    private accountBlocked;
+    /** The last successful reading; null until the first readable one. */
+    private latest;
+    /**
+     * Whether the account was refusing requests at the previous successful read.
+     *
+     * This ONE BOOLEAN is the entire edge. The probe is the single source of truth
+     * for account state, so nothing has to remember which session was blocked, or
+     * decode a provider's refusal wording to work it out.
+     */
+    private wasBlocked;
+    private errorStreak;
     /** Session id → the disposers of its prompt line and tool, plus its model. */
     private readonly bound;
     /** Built once at mount; see the constructor for why it is not per-session. */
@@ -152,46 +160,18 @@ export default class QuotaService extends Service {
      * model's reset.
      */
     private tick;
+    /**
+     * The account recovered. Tell the sessions using it.
+     *
+     * Three bounds keep a redundant wake rare and harmless, and none of them
+     * needs per-session memory of what happened:
+     *   - idle only, so a running turn is never interrupted;
+     *   - the session's own model must be usable NOW, so a video model is not
+     *     woken by a 5-hour window that never gated it;
+     *   - the announcement is already hedged about whether this session's work
+     *     was the thing that got cut off.
+     */
+    private onReset;
     /** One self-rescheduling timer, owned by a single effect. */
     private armTimer;
-    /**
-     * Remember that a session was refused, so its reset can wake it.
-     *
-     * A failure from a route this row does not watch is not ours to record — a
-     * blocked session on a fallback provider must not be woken by this plan's
-     * reset.
-     *
-     * `provider` is the route the failure is ATTRIBUTED to, and the two channels
-     * do not supply it the same way: `agent/request-error` carries the route
-     * that served the failed request, while `agent/error` carries none and its
-     * caller passes the agent's CURRENT route.
-     *
-     * That leaves one accepted limitation on `agent/error`: a session that
-     * changed route between the failure and its surfacing is judged by the route
-     * it holds now, which can drop a real block — the session is never woken — or
-     * attribute a foreign one. Dropping the filter instead would trade that for
-     * a wake on every unrelated error, and an advisory row that stays quiet
-     * unless its own window ran out is worth more than one that never misses.
-     */
-    private recordBlock;
-    /** Which window will gate this model right now. */
-    private windowFor;
-    /**
-     * Deliver one announcement.
-     *
-     * The record has already been consumed by `settle`, so a throw here costs
-     * the message rather than producing a duplicate on the next probe. A double
-     * "your quota reset, resume" is worse than a dropped one, because the agent
-     * resumes work it already resumed.
-     */
-    private deliver;
-    /** Drop a session's outstanding record, e.g. because it changed route. */
-    forget(sessionId: SessionId): void;
-    /**
-     * The blocked-window marker survives a restart, so a window that ran out
-     * while the host was down still wakes on the first healthy read after boot.
-     * Best-effort by design: a filesystem that cannot be written must not stop
-     * the row from running.
-     */
-    private persistMarker;
 }

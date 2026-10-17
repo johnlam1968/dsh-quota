@@ -12,18 +12,14 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 import { Config, definePlan } from './config.js'
 import type { PlanDefinition, QuotaConfig } from './config.js'
 import { classifyQuota } from './probe.js'
-import { effectiveRows, isUsable, windowsFor } from './derive.js'
+import { effectiveRows, isUsable } from './derive.js'
 import type { DeriveSpec } from './derive.js'
 import { nextDelay } from './schedule.js'
 import type { Schedule } from './schedule.js'
-import { matchesBlock } from './block.js'
-import type { FailureLike } from './block.js'
 import { noticeSummary, noticeText } from './notice.js'
 import { formatDuration, renderQuotaStatus } from './format.js'
 import { createQuotaNotice } from './message.js'
-import { EMPTY_STATE, settle, withBlock, withoutBlock } from './state.js'
-import type { EdgeNotice, QuotaState } from './state.js'
-import type { BlockRecord, PlanStatus, QuotaWindow } from './types.js'
+import type { PlanStatus, QuotaWindow } from './types.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
@@ -54,34 +50,6 @@ declare module '@deepseek-ai/cordis' {
 declare module '@deepseek-ai/dsh-session' {
   interface SessionEventMap {
     'model/selection': { provider: string; model: string; reasoningEffort?: string }
-  }
-}
-
-/**
- * Narrow the `unknown` on `agent/error` to the fields block matching reads.
- *
- * That channel carries the raw thrown value, never an `LlmFailure`, so every
- * field is checked explicitly and nothing is asserted. A thrown
- * `LlmError` keeps its own `failure`; anything else is flattened to its
- * message with an unknown code, which will not match a quota pattern — the
- * conservative outcome.
- */
-function narrowFailure(error: unknown): FailureLike {
-  if (typeof error !== 'object' || error === null) {
-    return { code: 'UNKNOWN', message: error instanceof Error ? error.message : String(error) }
-  }
-  const failure = (error as { failure?: unknown }).failure
-  if (typeof failure === 'object' && failure !== null) {
-    const f = failure as Record<string, unknown>
-    if (typeof f['code'] === 'string' && typeof f['message'] === 'string') {
-      const status = typeof f['status'] === 'number' ? f['status'] : undefined
-      return { code: f['code'], message: f['message'], ...(status === undefined ? {} : { status }) }
-    }
-  }
-  const message = (error as { message?: unknown }).message
-  return {
-    code: typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : 'UNKNOWN',
-    message: typeof message === 'string' ? message : String(error),
   }
 }
 
@@ -188,8 +156,17 @@ export default class QuotaService extends Service {
 
   private readonly config: QuotaConfig
   private readonly plan: PlanDefinition
-  private state: QuotaState = EMPTY_STATE
-  private accountBlocked = false
+  /** The last successful reading; null until the first readable one. */
+  private latest: PlanStatus | null = null
+  /**
+   * Whether the account was refusing requests at the previous successful read.
+   *
+   * This ONE BOOLEAN is the entire edge. The probe is the single source of truth
+   * for account state, so nothing has to remember which session was blocked, or
+   * decode a provider's refusal wording to work it out.
+   */
+  private wasBlocked = false
+  private errorStreak = 0
   /** Session id → the disposers of its prompt line and tool, plus its model. */
   private readonly bound = new Map<SessionId, { model: string; disposers: Array<() => void> }>()
   /** Built once at mount; see the constructor for why it is not per-session. */
@@ -201,32 +178,6 @@ export default class QuotaService extends Service {
     super(ctx, 'quota')
     this.config = config
     this.plan = definePlan(config)
-
-    // Two channels, because one is not enough.
-    //
-    // `agent/request-error` fires only when the stream ends with
-    // finish.kind === 'error' | 'aborted' — an IN-BAND refusal, and the only
-    // channel that carries a structured `failure` and the provider.
-    //
-    // A THROWN transport or protocol failure never reaches it. In the
-    // installed loop the waterfall sits inside the post-stream settle path,
-    // guarded by exactly that finish check; a throw jumps past it, is
-    // recorded as turn/end {kind:'error'}, and surfaces only as `agent/error`,
-    // whose payload has no `failure` at all. A session stranded by a dropped
-    // connection is precisely the case this row exists for, so both are
-    // observed.
-    this.ctx.on('agent/request-error', async (payload, next) => {
-      this.recordBlock(payload.agent.id, payload.failure, payload.provider)
-      return await next()
-    })
-
-    this.ctx.on('agent/error', ({ agent, error }) => {
-      const failure = narrowFailure(error)
-      // No provider on this channel, so only the current route can be
-      // checked. A session on another route cannot have been blocked by this
-      // plan's quota in the first place.
-      this.recordBlock(agent.id, failure, agent.options.provider)
-    })
 
     // `agent/created` is a SERIAL dispatch: a throw here FAILS THE CREATION,
     // so a defect in an advisory plugin would take down every new session in
@@ -328,7 +279,7 @@ export default class QuotaService extends Service {
       agent.ctx.systemPrompt.context({
         name: 'quota-usage-status',
         order: 900,
-        text: () => renderQuotaStatus(this.state.status, model, this.plan.derive, this.config.lowWaterMarkPercent),
+        text: () => renderQuotaStatus(this.latest, model, this.plan.derive, this.config.lowWaterMarkPercent),
       }),
     )
     disposers.push(agent.ctx.tools.register(this.statusTool))
@@ -341,12 +292,11 @@ export default class QuotaService extends Service {
     if (existing === undefined) return
     this.bound.delete(sessionId)
     for (const dispose of [...existing.disposers].reverse()) dispose()
-    this.forget(sessionId)
   }
 
   /** The one payload the tool and the prompt line both derive from. */
   private statusReport(model: string): StatusPayload {
-    const status = this.state.status
+    const status = this.latest
     if (status === null || status.error !== null) {
       return { known: false, provider: this.config.provider, usable: true, windows: [] }
     }
@@ -365,13 +315,13 @@ export default class QuotaService extends Service {
 
   /** The current detached status, or null before the first read. */
   status(): PlanStatus | null {
-    return this.state.status
+    return this.latest
   }
 
   /** Read now instead of waiting for the timer, and settle the result. */
   async refresh(): Promise<PlanStatus> {
     await this.tick()
-    return this.state.status ?? this.errorStatus('no status available')
+    return this.latest ?? this.errorStatus('no status available')
   }
 
   private get deriveSpec(): DeriveSpec {
@@ -432,26 +382,61 @@ export default class QuotaService extends Service {
   private async tick(): Promise<Schedule> {
     const now = Date.now()
     const next = await this.read(now)
-    const settled = settle(this.state, next, this.config.provider, this.plan.derive)
-    this.state = settled.state
 
-    if (settled.accountBlocked !== this.accountBlocked) {
-      this.accountBlocked = settled.accountBlocked
-      this.persistMarker()
+    // An unreadable reading says nothing about the window. Change nothing but
+    // the streak, so a dropped request can never be mistaken for a reset.
+    if (next.error !== null) {
+      this.errorStreak++
+      return nextDelay(next, true, now, this.plan.schedule, this.errorStreak, Math.random())
     }
+    this.errorStreak = 0
+    this.latest = next
 
-    for (const notice of settled.notices) this.deliver(notice)
+    const blocked = !isUsable(next, this.plan.probe.entry, this.plan.derive)
+    if (this.wasBlocked && !blocked) this.onReset(next)
+    this.wasBlocked = blocked
 
-    if (next.error === null) this.ctx.emit('quota/changed', { status: next })
+    this.ctx.emit('quota/changed', { status: next })
+    return nextDelay(next, !blocked, now, this.plan.schedule, 0, Math.random())
+  }
 
-    return nextDelay(
-      next,
-      isUsable(next, this.plan.probe.entry, this.plan.derive),
-      now,
-      this.plan.schedule,
-      this.state.errorStreak,
-      Math.random(),
-    )
+  /**
+   * The account recovered. Tell the sessions using it.
+   *
+   * Three bounds keep a redundant wake rare and harmless, and none of them
+   * needs per-session memory of what happened:
+   *   - idle only, so a running turn is never interrupted;
+   *   - the session's own model must be usable NOW, so a video model is not
+   *     woken by a 5-hour window that never gated it;
+   *   - the announcement is already hedged about whether this session's work
+   *     was the thing that got cut off.
+   */
+  private onReset(recovered: PlanStatus): void {
+    for (const agent of this.ctx.agents.list()) {
+      if (agent.options.provider !== this.config.provider) continue
+      if (agent.status !== 'idle') continue
+      const model = agent.options.model ?? ''
+      if (!isUsable(recovered, model, this.plan.derive)) continue
+
+      agent.followup(
+        createQuotaNotice(
+          noticeText({
+            provider: this.config.provider,
+            model,
+            spec: this.plan.derive,
+            status: recovered,
+            record: {
+              window: '5h',
+              model,
+              since: recovered.checkedAt,
+              code: 'USAGE_LIMIT',
+              message: 'the usage window was exhausted',
+            },
+          }),
+          `${this.config.provider} usage window reset — blocked work may resume`,
+        ),
+      )
+    }
   }
 
   /** One self-rescheduling timer, owned by a single effect. */
@@ -482,93 +467,4 @@ export default class QuotaService extends Service {
     }
   }
 
-  /**
-   * Remember that a session was refused, so its reset can wake it.
-   *
-   * A failure from a route this row does not watch is not ours to record — a
-   * blocked session on a fallback provider must not be woken by this plan's
-   * reset.
-   *
-   * `provider` is the route the failure is ATTRIBUTED to, and the two channels
-   * do not supply it the same way: `agent/request-error` carries the route
-   * that served the failed request, while `agent/error` carries none and its
-   * caller passes the agent's CURRENT route.
-   *
-   * That leaves one accepted limitation on `agent/error`: a session that
-   * changed route between the failure and its surfacing is judged by the route
-   * it holds now, which can drop a real block — the session is never woken — or
-   * attribute a foreign one. Dropping the filter instead would trade that for
-   * a wake on every unrelated error, and an advisory row that stays quiet
-   * unless its own window ran out is worth more than one that never misses.
-   */
-  private recordBlock(
-    sessionId: SessionId,
-    failure: FailureLike,
-    provider: string | undefined,
-  ): void {
-    if (provider !== undefined && provider !== this.config.provider) return
-    if (!matchesBlock(failure, this.plan.blockPatterns)) return
-    const agent = this.ctx.agents.get(sessionId)
-    const model = agent?.options.model ?? ''
-    const record: BlockRecord = {
-      window: this.windowFor(model),
-      model,
-      since: Date.now(),
-      code: failure.code,
-      message: failure.message,
-    }
-    this.state = withBlock(this.state, sessionId, record)
-  }
-
-  /** Which window will gate this model right now. */
-  private windowFor(model: string): QuotaWindow {
-    const status = this.state.status
-    if (status === null || status.error !== null) return '5h'
-    for (const window of windowsFor(model, this.plan.derive)) {
-      if (!isUsable({ ...status, rows: status.rows.filter(r => r.window === window) }, model, this.plan.derive)) {
-        return window
-      }
-    }
-    return windowsFor(model, this.plan.derive)[0] ?? '5h'
-  }
-
-  /**
-   * Deliver one announcement.
-   *
-   * The record has already been consumed by `settle`, so a throw here costs
-   * the message rather than producing a duplicate on the next probe. A double
-   * "your quota reset, resume" is worse than a dropped one, because the agent
-   * resumes work it already resumed.
-   */
-  private deliver(notice: EdgeNotice): void {
-    const agent = this.ctx.agents.get(notice.sessionId)
-    if (agent === undefined) return
-    agent.followup(createQuotaNotice(noticeText(notice.facts), noticeSummary(notice.facts)))
-  }
-
-  /** Drop a session's outstanding record, e.g. because it changed route. */
-  forget(sessionId: SessionId): void {
-    this.state = withoutBlock(this.state, sessionId)
-  }
-
-  /**
-   * The blocked-window marker survives a restart, so a window that ran out
-   * while the host was down still wakes on the first healthy read after boot.
-   * Best-effort by design: a filesystem that cannot be written must not stop
-   * the row from running.
-   */
-  private persistMarker(): void {
-    if (this.config.markerPath === '') return
-    try {
-      const { writeFileSync, rmSync } = require('node:fs') as typeof import('node:fs')
-      if (this.accountBlocked) writeFileSync(this.config.markerPath, String(Date.now()))
-      else rmSync(this.config.markerPath, { force: true })
-    } catch (error) {
-      // Persistence is an optimisation: the in-memory state stays correct
-      // without it. But a silent swallow here once hid a `require` that does
-      // not exist in ESM, so this row looked healthy while writing nothing.
-      // Anything swallowed is now reported.
-      this.ctx.logger?.warn('dsh-quota: could not update the blocked-window marker', error)
-    }
-  }
 }
