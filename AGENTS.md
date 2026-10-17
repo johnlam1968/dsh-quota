@@ -1,63 +1,105 @@
 # dsh-quota
 
-A host-plane DeepSeek Harness bundle that watches a model provider's rolling-window quota and lets both an **agent** (by its own judgement) and a **configured policy** (automatically) change a session's model route in flight.
+A host-plane DeepSeek Harness bundle that watches an LLM provider's rolling usage windows, tells an agent where it stands, and **wakes it when a window that blocked it resets**.
 
-Three rows in one package, each its own entry point so a deployment enables them independently:
+**It is advisory and never a gate.** It observes, it renders a line of context, it registers a tool, and at most it *adds* one user-role message. It never blocks, denies, queues or parks a request. A `QuotaGate` that did gate traffic once existed in the sibling project `dsh-telegram` (added `d8cfda2`, deleted `5aa18f1`) — do not reinstate it here.
 
-| Row | Entry | What it does |
+## Two implementations, one live
+
+| Branch | Worktree | Status |
 |---|---|---|
-| quota (observation) | `lib/index.js` | Publishes `ctx.quota`, emits `quota/changed`, registers the `quota_status` tool. Arms one timer at the provider's own window boundary rather than polling |
-| select-model (judgement) | `lib/index-select-model.js` | Registers the `select_model` tool so an agent can inspect or change a route itself |
-| route-policy (automatic) | `lib/index-route-policy.js` | Consumes `quota/changed`; switches affected sessions to a fallback on a confirmed block and restores each session's remembered route on a confirmed refresh. Ships `disabled: true` |
+| **`feat/quota-groundup`** | `.worktrees/quota-groundup` | **Built, installed and ACTIVE** in the `web` profile. This is the plugin. |
+| `feat/quota-impl` | `.worktrees/quota-impl` | An earlier, different design: three rows in one package (observation / `select_model` / route-policy). Not installed. Its spec and plan live in `docs/superpowers/`. |
 
-**It is advisory and never a gate.** It changes a route; it never blocks, queues, or parks a message. A `QuotaGate` that did gate traffic once existed in the sibling project `dsh-telegram` (added `d8cfda2`, deleted `5aa18f1`) and was removed deliberately — do not reinstate it here.
+They do not supersede each other; both are valid. Where this file describes one row, it describes `feat/quota-groundup`.
 
-## Handoff note
+## What the live plugin does
 
-This project was designed in a different session and handed off. Everything the next session needs is in the repo; nothing lives only in a conversation.
+One row, `QuotaService extends Service`, published as `ctx.quota`:
 
-- **Spec (binding):** `docs/superpowers/specs/2026-09-19-quota-awareness-design.md` — 11 sections. §3 architecture, §6 configuration, §10 the switching policy (with the guards against flapping), §11 the `select_model` tool surface and every refusal path.
-- **Plan (the work):** `docs/superpowers/plans/2026-09-19-quota-awareness.md` — 8 tasks across two milestones, with the mutation proof each task must run; Task 8a is an optional wake-on-refresh row.
-- **Background (informative, not binding):** `docs/DSH_SEAMS_FOR_QUOTA.md` — a topical survey of the dsh seams relevant to quota awareness: `tools/pre-execute`, `agent/request`, `agent/pre-step`, `ctx.sessionController.selectModel(...)`, and `ctx.subagents.sendMessage(...)`. Read this before extending the policy row or designing anything that crosses the "advisory, never a gate" line.
-- **SDD ledger (progress):** `<worktree>/.superpowers/sdd/2026-09-19-quota-awareness/progress.md` — gitignored scratch, but it is the recovery map: the pre-flight scan, Task 1's rulings, the mutation results, and the gate limits that were found by probing. Trust it and `git log` over recollection.
-- **Branch and worktree:** `feat/quota-impl` at `.worktrees/quota-impl`. Continue there; `master` holds the docs.
+1. **Probe** — reads the provider's quota endpoint on a self-rescheduling timer. The provider reports the countdown to each window boundary, so the reset time is *known*: the timer schedules, the probe only verifies. A 4-hour wait costs ~16 requests, not the ~960 a fixed 15-second floor would spend.
+2. **Report** — a session whose committed route is the watched provider gets a `<provider-quota>` line in its system prompt, and a `quota_status` tool it can call. Both derive from the same function, so they cannot disagree.
+3. **Wake** — when a window that blocked a session resets, one `form: 'notice'` user-role message is delivered through `agent.followup(...)`. That is the whole point of the plugin: a turn that died on a usage refusal otherwise never retries, even after the limit is gone.
 
-**Current state:** Task 1 (toolchain, `Config`, the mount gate) is implemented and committed (`5d39d4a`, 9 tests, typecheck and build clean). Its review was dispatched from the previous session; if the verdict is not in the ledger, re-review the commit before trusting it. Tasks 2–8 are untouched.
+Subscription is **derived, not stored**: recomputed from the session's route on `model/selection` and `request/context`, so it follows a provider switch in both directions.
 
-**Next step:** Task 2 (pure parsing and the `usable` derivation). Generate its brief with the SDD skill's `scripts/task-brief <plan> 2`, dispatch an implementer per `subagent-driven-development`, and review the diff before moving on.
+## Current state
+
+`feat/quota-groundup`, 12 commits, branch cut from `master` at `d9e8318`.
+
+- Installed: `/home/john/.dsh/profiles/web/node_modules/dsh-quota` → symlink to the worktree; `lib/index.js` present; listed in profile `dependencies` and `dsh.profile.bundles`; `list_plugins` reports `fiberPhase: "active"`.
+- Verified against the **live** endpoint with no environment variable set: 4 rows, no error.
+- **Not yet observed:** the wake actually firing. Every part is verified individually; the assembled path only resolves when the wall is hit.
+
+Key documents: `docs/.superpowers/live-response-shape.md` (the measured endpoint shape, and the one trap it contains), `docs/.superpowers/specs/` and `plans/` (the design and the remaining plan), `docs/.superpowers/progress.md` (state ledger).
+
+## Harness gaps — report these, do not work around them silently
+
+Found by reading the installed declarations and loading the built bundle. None of them is ours to fix; if one is hit again, say so rather than inventing a local convention.
+
+- **`PromptContext.required` is documented but not implemented.** `docs/subsystems/system-prompt.md` describes it as *"Keep this operational context when optional runtime context is disabled"*, but the installed `dsh-system-prompt`'s `PromptContext` declares only `name`, `order`, `text`, and the implementation never reads `required`. **Consequence:** a deployment calling `suppressRuntimeContext()` can still hide the quota line from a blocked agent.
+- **`model/selection` is missing from the installed `SessionEventMap`.** The runtime appends it (`dsh-api-session-controller` calls `session.append('model/selection', …)`) and `known-event-types.js` lists it, but the installed type omits it — so TypeScript narrows `event.type === 'model/selection'` to `never`. Merged back through the documented merge-extension, with the payload observed in a real session log.
+- **`plugin_validate` false-OKs `required` in an output schema.** `required` is a *parameters*-DSL concept; an `output.schema` object node rejects it at registration with `schema.required is not supported by the value schema DSL`. The validator returns OK on exactly that.
+- **A nullable schema field is `oneOf: [{type:'number'}, {type:'null'}]`, never `type: ['number','null']`.** Legal types are a single value.
+- **`Context.plugin()` does not take `exports.default ?? exports`.** That is a *Loader* convenience. A namespace import of a Service class hands it an object with no `apply` and it refuses to mount.
+- **`fiber.update()` is typed `void`** and restarts behind the async `internal/update` waterfall, so `await fiber.update(...)` awaits `undefined` and reads the fiber mid-`UNLOADING`.
 
 ## How work is done here
 
-The process is `subagent-driven-development`: one implementer per task, a task-scoped review of every diff (spec compliance **and** quality), a fix round if the review finds Critical or Important issues, and a whole-branch review at the end. Do not dispatch two implementers at once in this worktree.
+**Verify against the running harness, not against a mock.** The plugin is built for this harness and this host; `plugin_doc`, `plugin_validate`, `plugin_scaffold`, `cordis_inspect_query`, and `plugin_manager` answer questions faster and more truthfully than a test that stubs globals and shares process-global state across files. The suite in `tests/` exists and is useful as a regression net, but it is **not** the gate — two cases there are parked (`.skip`) for exactly this reason.
 
-**Four standards, carried over from `dsh-telegram` where they were earned:**
+Concretely, the loop that works:
 
-1. **Read seam contracts from the installed type definitions, never from memory or a cookbook.** In the sibling project this caught four plan defects before dispatch and missed two that review then caught. It applies to a parameter's *type* and to the **major version of the package that defines it**.
-2. **Every task proves a test can fail** by naming a mutation that must break it, then reverting byte-identically and reporting both results. A test that survives its own behaviour being deleted is worse than no test, because it reads as coverage.
-3. **Never assert a shape on external data.** The quota endpoint is untrusted input: narrow it with explicit checks, never `as` casts. The API's `unknown` returns are a feature.
-4. **One harness case per seam the plugin registers into**, passing a fake through the harness root's `extra`.
+1. `plugin_doc(topic=…)` then `plugin_validate` the thing you are about to write.
+2. `pnpm build` and **load the built bundle** — `scripts/smoke.mjs` mounts `lib/index.js` on a real `Context` and drives a route change. Registration-time throws only happen here.
+3. `scripts/live-probe.mjs` for anything touching the real endpoint.
+4. `plugin_manager install_bundle` + `cordis_inspect_query Config.listConfigs` to confirm it is live.
 
-## Toolchain facts that cost time to learn
+**Never call the oversized inspection tools casually.** `plugin_manager list_bundles`, `list_plugins` (195 entries) and `cordis_inspect_query Config.listConfigs` return payloads large enough to 500 the server through the tool bridge. Use targeted calls or `bash`.
 
-- `pnpm` 11 needs `pnpm-workspace.yaml`'s `allowBuilds: { esbuild: true }` or esbuild's postinstall is skipped (`ERR_PNPM_IGNORED_BUILDS`). The esbuild **JS API** works; the `pnpm exec esbuild` shim does not.
-- **`lib/` is tracked** (the profile links this checkout; nothing builds at install time). Run `pnpm build` and commit the regenerated `lib/` with the source that produced it.
-- Dev dependencies are pinned to the versions the running profile resolves: `@deepseek-ai/cordis@4.0.2`, `dsh-*@0.1.5-rc.2`, `@types/node@^22.20.0`. npm `latest` for the dsh packages is `0.0.1-rc.1` — never install unpinned.
-- **One runtime dsh import, and only one: `@deepseek-ai/dsh-tools`.** Every other dsh/cordis import is `import type`. `scripts/build.mjs` asserts the bundle carries no `@deepseek-ai/dsh` specifier **other than `@deepseek-ai/dsh-tools`**, and fails the build on anything else. The exception is forced, not a convenience: a host row cannot register a model tool without it. `defineTool` compiles the package's own parameter DSL into the enforced JSON Schema subset (`dsh-tools/lib/index.js:837-877`) and installs strict call validation; the DSL (`parameters: { path: { type: 'string', required: true } }`) is dsh-specific -- neither zod nor raw JSON Schema -- and the helpers that would let you hand-roll a definition (`parameterSchemaSpecToJsonSchema`, `assertSupportedJsonSchema`, `validateJsonSchemaValue`) are themselves runtime exports of the same package. `@deepseek-ai/dsh-tools` is therefore a **dependency**, pinned to the version the profile resolves (`0.1.5-rc.2`), not a devDependency. A second copy of the package in the plugin's tree is harmless: only its pure functions are used, and the definition object they produce is plain data handed to the real runtime.
-- `zod` is **v4** here: the storage-domain package's `ZodType` comes from its own zod 4.6.5, and a zod-3 schema fails `tsc` (zod 3.25's bundled `zod/v4` fails too).
-- **Tool registration in a host row** is `defineTool` from `@deepseek-ai/dsh-tools` passed to `ctx.tools.register(...)`, wrapped in `ctx.effect` (the one allowed runtime dsh import, see above). `harness.defineTool` / `harness.registerTool` are the dynamic-Cordis *sandbox* signatures and do not exist here. The parameter DSL is the package's own: read `@deepseek-ai/dsh-tools/README.md` "Register a tool" before writing one -- it is not zod and not JSON Schema, and `ctx.tools.register` re-validates the definition at registration (it throws `tool "x" must declare output { schema, render, presentationMeta? }`).
-- **A missing hard dependency is silent.** Without its injected service a row's fiber sits at `PENDING`, `plugin()` does not throw, `await` resolves, and the row is inert — so a harness case without the seam passes vacuously. Task 1's gate asserts the fiber is ACTIVE for exactly this reason.
+## Standards that earned their place here
 
-## Reference material
+1. **Read seam contracts from the installed type definitions**, never from memory or a cookbook.
+2. **An advisory plugin must never be able to fail session creation.** `agent/created` is a **serial** dispatch: a throw in a listener fails the *creation*. So the tool definition is built **once at mount**, not per subscription (`defineTool` validates at call time — a per-subscription call would have surfaced a schema error inside that dispatch), and the listener body is contained with anything swallowed logged.
+3. **A `catch` that is load-bearing must report.** A silent swallow hid a `require` that does not exist in ESM, leaving the row looking healthy while writing nothing.
+4. **Never assert a shape on external data.** The quota endpoint is untrusted: narrow with explicit checks, never `as`.
+5. **Typecheck before commit, not alongside tests.** Two commits shipped with a red `tsc` because the tests were green and `tsc` was not run.
 
-- **The Cordis + dsh contract:** `/home/john/CodingProjects/dsh-telegram/docs/DSH_CORDIS_SHAPES.md` — plugin forms, services and `inject`/`get`/`provide`, fibers and effect ownership, events, composition and patch semantics, the host-vs-preset planes, and a traps→correct-form table. Read it before touching dsh APIs.
-- **The harness source of truth:** `/home/john/deepseek-harness` (source, docs, and the vendored Cordis). The installed packages under `@deepseek-ai/dsh/node_modules/` are what actually runs and are a **different version** from that checkout — check both when a contract matters.
-- **How to read a quota by hand:** `mmx quota` (CLI; reads `~/.mmx/config.json`), or `GET https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains` with `Authorization: Bearer <key>`. Read the `model_remains[]` entry whose `model_name` is `general`: status 2 with 0% remaining means the current interval is blocked, and `remains_time` is the reset countdown in milliseconds. Weekly headroom is reported separately and can be 100% while the interval is blocked.
+## Toolchain facts that cost time
+
+- Runtime versions are what the profile resolves, and they are **not** what npm `latest` says (`0.0.1-rc.1`). Currently `@deepseek-ai/cordis@4.0.4`, `dsh-*@0.1.7-rc.2`, `@deepseek-ai/schemastery@3.18.4`.
+- **Runtime dsh imports are an allowlist of three**: `cordis` (`extends Service` is a real base class), `dsh-tools` (`defineTool`), `schemastery` (the Config schema evaluates at load). `scripts/build.mjs` asserts the emitted bundle imports nothing else — and it reads the **emitted specifiers**, not metafile inputs, because inputs are node_modules-relative paths and matching them silently finds nothing.
+- **`lib/` is tracked.** The profile links this checkout and nothing builds at install time, so the built entry point must be committed with its source.
+- **`pnpm` 11** needs `pnpm-workspace.yaml`'s `allowBuilds: { esbuild: true }` or esbuild's postinstall is skipped.
+- **A missing hard dependency is silent.** Without its injected service a fiber sits at `PENDING`, `plugin()` does not throw, and the row is inert while looking mounted. It was caught by adding `systemPrompt` and `tools` to `inject` and watching 14 tests fail.
+- The credential comes from `MINIMAX_API_KEY`, falling back to `~/.mmx/config.json` (the MiniMax CLI's own file). Without the fallback the row mounts and then reports every read as unauthenticated — mounted but blind.
+- `FiberState` is an ambient `const enum` whose members `isolatedModules` forbids reading; the numbers are written out.
+
+## The endpoint, measured
+
+`GET https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains` returns `model_remains` with **one entry per account group** — `general` and `video` were both observed — and **every entry carries both windows** as parallel field families (`current_interval_status` / `current_weekly_status`, …, `remains_time` / `weekly_remains_time`).
+
+**The trap:** `current_weekly_status` was observed at **3** while `current_weekly_remaining_percent` read **100**. The status vocabulary is not shared between the windows, so the block rule differs:
+
+- **5h** blocks on `status === 2 || percent === 0` (the reference script's rule).
+- **weekly** blocks on **`percent === 0` only** — status is parsed for diagnostics and never blocks, because `3` cannot be mapped without hitting the wall.
+
+Blocking on the unmapped status would halt every session for no reason. And the asymmetry is safe anyway: the `2056` refusal is the ground truth for a block; the probe only has to detect *recovery*, which a non-zero percentage reports correctly under either rule.
 
 ## Commands
 
 ```sh
 pnpm install
 pnpm typecheck     # tsc -p tsconfig.json
-pnpm test          # vitest run
-pnpm build         # esbuild bundles each row + tsc declarations, then asserts no dsh specifier but dsh-tools
+pnpm test          # vitest run — regression net, not the gate
+pnpm build         # esbuild bundle + declarations + runtime-import allowlist
+node scripts/smoke.mjs      # mount the BUILT bundle, drive a route change
+node scripts/live-probe.mjs # one real read through our own parser
+node scripts/mutate.mjs    # 37 mutations; exits non-zero if one survives
 ```
+
+## Reference material
+
+- **The harness docs:** `/home/john/deepseek-harness/docs`. The installed packages under `@deepseek-ai/dsh/node_modules/` are a **different version** from that checkout — the installed declarations win, and they are what `plugin_doc` reflects.
+- **The plugin-authoring skills are the fast path**: `dsh-plugin-onboarding`, `dsh-plugin-dev-kb`, `cordis-plugin-development`, `editing-cordis-compositions` (read it *with* `cordis-composition-reference` for the patch dialect).
+- **Read a quota by hand:** `mmx quota`, or the endpoint above with `Authorization: Bearer <key>` from `~/.mmx/config.json`.
