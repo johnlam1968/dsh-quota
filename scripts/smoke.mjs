@@ -80,6 +80,40 @@ if (sessionEventListener === null) {
 }
 console.log('PASS  subscribed to session/event for the created agent')
 
+// COLD SESSION. `requestContext()` is undefined and NO event has fired yet —
+// this is a session created for its first request. The row must fall back to
+// `agent.options` (the source `onReset` already trusts) rather than leave the
+// session blind for a whole turn. Asserted BEFORE any event is pushed, because
+// after an event this is indistinguishable from the route-change case below.
+if (!contexts.includes('quota-usage-status') || !tools.includes('quota_status')) {
+  console.error(`FAIL  cold session was not subscribed at creation: contexts=${JSON.stringify(contexts)} tools=${JSON.stringify(tools)}`)
+  process.exit(1)
+}
+console.log('PASS  cold session subscribed at creation, before any route event')
+
+// And the fallback must not OVER-subscribe: an agent whose own options point
+// somewhere else gets nothing until a route event says otherwise.
+{
+  const other = {
+    id: 'session-other',
+    options: { provider: 'deepseek-official', model: 'x' },
+    status: 'idle',
+    session: agent.session,
+    followup() {},
+  }
+  const otherCtx = {
+    on() { return () => {} },
+    systemPrompt: { context() { contexts.push('LEAKED'); return () => {} } },
+    tools: { register() { tools.push('LEAKED'); return () => {} } },
+  }
+  root.emit('agent/created', { agent: { ...other, ctx: otherCtx }, source: 'startup' })
+  if (contexts.includes('LEAKED') || tools.includes('LEAKED')) {
+    console.error('FAIL  a session on another provider was subscribed at creation')
+    process.exit(1)
+  }
+}
+console.log('PASS  a session on another provider is not subscribed at creation')
+
 // Route change ONTO the watched provider.
 sessionEventListener(agent.session, { type: 'request/context', data: { provider: 'minimax-cn', model: 'MiniMax-M3' } })
 if (!contexts.includes('quota-usage-status') || !tools.includes('quota_status')) {

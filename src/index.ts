@@ -202,9 +202,19 @@ export default class QuotaService extends Service {
           this.reconcile(agent, event.data.provider, event.data.model)
         }
       })
-      // A resumed session may already have a committed route.
+      // A resumed session may already have a committed route. A session
+      // created FOR its first request has none: `requestContext()` is
+      // undefined and the `request/context` event lands after that step's
+      // assembly, so a cold session would go a whole turn with neither the
+      // prompt line nor the tool. Fall back to the agent's own options — the
+      // same source `onReset` already trusts to decide who to wake. If that
+      // guess is wrong the first `request/context` reconciles again and
+      // `detach()`s, and reconcile is idempotent either way.
       const current = agent.session.requestContext()
       if (current !== undefined) this.reconcile(agent, current.provider, current.model)
+      else if (agent.options.provider !== undefined) {
+        this.reconcile(agent, agent.options.provider, agent.options.model ?? '')
+      }
      } catch (error) {
       this.ctx.logger?.warn('dsh-quota: could not subscribe a session; continuing without it', error)
      }

@@ -93,6 +93,22 @@ Rules taken verbatim in spirit:
 
 ## Open gaps
 
+- **RESOLVED — a session's first turn is no longer blind.** It used to have
+  neither the quota line nor the `quota_status` tool. Measured in a live
+  session log, not inferred: the `request/header` with `reason: "initial"`
+  carried 48 tools, and the next one — `reason: "change"`, 5.6 s later, after
+  exactly one tool round-trip — carried 49, with `quota_status` inserted
+  between `present` and `read`. Cause: the derived-subscription ordering at
+  `src/index.ts:194-207`, where `agent/created` reads
+  `agent.session.requestContext()` — `undefined` for a session created for its
+  first request — and the only event carrying a committed route,
+  `request/context`, is appended *after* that step's assembly. **Fix:**
+  `agent/created` falls back to `agent.options.provider` / `.model`, the same
+  source `onReset` already trusts to decide who to wake, so turn 1 carries both
+  surfaces. `scripts/smoke.mjs` now asserts the fallback fires *before any
+  route event* and that it does not over-subscribe a session on another
+  provider; both checks go red against the pre-fix build. **The wake was never
+  affected** — `onReset` walks `ctx.agents.list()` and never reads `bound`.
 - **`src/index.ts` has no behaviour test.** The lifecycle gate (Task 0) mounts,
   updates, disposes and proves the timer is owned — but nothing yet exercises a
   probe, a failure or a delivery. A mutation deleting the `agent/error` listener

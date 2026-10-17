@@ -14,9 +14,9 @@
         lowWaterMarkPercent: 20
         schedule:
           divisor: 4
-          minIntervalMs: 5000
-          maxIntervalMs: 15000
-          skewMs: 5000
+          minIntervalMs: 15000
+          maxIntervalMs: 900000
+          skewMs: 30000
           baseBackoffMs: 1000
           maxBackoffMs: 300000
           jitterRatio: 0.1

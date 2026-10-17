@@ -23,6 +23,8 @@ One row, `QuotaService extends Service`, published as `ctx.quota`:
 
 Subscription is **derived, not stored**: recomputed from the session's route on `model/selection` and `request/context`, so it follows a provider switch in both directions.
 
+**A cold session used to go one whole turn blind — fixed.** `agent/created` reads `agent.session.requestContext()`, which is `undefined` for a session created for its first request, and `request/context` lands *after* that step's assembly, so the subscription could not take effect until the next step. Measured in a live session log, not inferred: the `request/header` with `reason: "initial"` carried 48 tools, and the next one (`reason: "change"`, 5.6 s later, after one tool round-trip) carried 49, with `quota_status` inserted between `present` and `read`. `agent/created` now falls back to `agent.options` — the same source `onReset` already trusts to decide who to wake — so turn 1 carries both surfaces. `scripts/smoke.mjs` asserts the fallback fires **before any route event**, and that it does not over-subscribe a session on another provider; that check goes red against the pre-fix build. The wake was never affected: `onReset` walks `ctx.agents.list()` and never reads `bound`. **Do not read a row's absence from an opening roster as "not mounted" or "not subscribed".**
+
 ## Current state
 
 `feat/quota-groundup`, 33 commits, branch cut from `master` at `d9e8318`.
