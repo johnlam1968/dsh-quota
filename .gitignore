@@ -1,6 +1,4 @@
 node_modules/
-.env
-.env.*
-!.env.example
-.worktrees/
+lib/
 .superpowers/
+*.log
