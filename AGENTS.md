@@ -29,7 +29,7 @@ Subscription is **derived, not stored**: recomputed from the session's route on 
 
 - Installed: `/home/john/.dsh/profiles/web/node_modules/dsh-quota` → symlink to the worktree; `lib/index.js` present; listed in profile `dependencies` and `dsh.profile.bundles`; `list_plugins` reports `fiberPhase: "active"`.
 - Verified against the **live** endpoint with no environment variable set: 4 rows, no error.
-- **Not yet observed:** the wake actually firing. Every part is verified individually; the assembled path only resolves when the wall is hit.
+- The wake **is** verified — `scripts/wake-check.mjs` drives the blocked→usable flip against the built bundle and asserts the delivered message. What is still unobserved is that flip happening against the *real* provider, which only occurs when the wall is hit.
 
 Key documents: `docs/.superpowers/live-response-shape.md` (the measured endpoint shape, and the one trap it contains), `docs/.superpowers/specs/` and `plans/` (the design and the remaining plan), `docs/.superpowers/progress.md` (state ledger).
 
@@ -46,14 +46,17 @@ Found by reading the installed declarations and loading the built bundle. None o
 
 ## How work is done here
 
-**Verify against the running harness, not against a mock.** The plugin is built for this harness and this host; `plugin_doc`, `plugin_validate`, `plugin_scaffold`, `cordis_inspect_query`, and `plugin_manager` answer questions faster and more truthfully than a test that stubs globals and shares process-global state across files. The suite in `tests/` exists and is useful as a regression net, but it is **not** the gate — two cases there are parked (`.skip`) for exactly this reason.
+**Verify against the running harness, not against a mock.** The plugin is built for this harness and this host, so the oracle is the harness: `plugin_doc`, `plugin_validate`, `plugin_scaffold`, `cordis_inspect_query`, `plugin_manager`, and three scripts that drive the **built** bundle. `pnpm test` does not exist — the suite was deleted deliberately. Write tests when something needs them, not by default.
 
 Concretely, the loop that works:
 
 1. `plugin_doc(topic=…)` then `plugin_validate` the thing you are about to write.
-2. `pnpm build` and **load the built bundle** — `scripts/smoke.mjs` mounts `lib/index.js` on a real `Context` and drives a route change. Registration-time throws only happen here.
-3. `scripts/live-probe.mjs` for anything touching the real endpoint.
-4. `plugin_manager install_bundle` + `cordis_inspect_query Config.listConfigs` to confirm it is live.
+2. `pnpm build`, then `node scripts/smoke.mjs` — mounts `lib/index.js` on a real `Context` and drives a provider switch. Registration-time throws only happen here.
+3. `node scripts/wake-check.mjs` — drives the blocked→usable flip with a scripted endpoint. This is the path no live run can exercise until the wall is hit, so it is the one thing that must never be assumed.
+4. `node scripts/live-probe.mjs` — one real read through our own parser.
+5. `plugin_manager install_bundle`, then a targeted `cordis_inspect_query Config.listConfigs` to confirm it is live.
+
+**Why the suite went.** It reached 108 tests and had started costing more than it returned: two cases were order-dependent on `process.env` and a global `fetch` stub shared across files, and chasing that meant per-file isolation config. Meanwhile `plugin_validate` caught a registration-time throw the suite never would have, because the suite never loaded the built bundle. Verification that runs against the thing being shipped beat verification that runs against a stand-in for it.
 
 **Never call the oversized inspection tools casually.** `plugin_manager list_bundles`, `list_plugins` (195 entries) and `cordis_inspect_query Config.listConfigs` return payloads large enough to 500 the server through the tool bridge. Use targeted calls or `bash`.
 
@@ -62,8 +65,9 @@ Concretely, the loop that works:
 1. **Read seam contracts from the installed type definitions**, never from memory or a cookbook.
 2. **An advisory plugin must never be able to fail session creation.** `agent/created` is a **serial** dispatch: a throw in a listener fails the *creation*. So the tool definition is built **once at mount**, not per subscription (`defineTool` validates at call time — a per-subscription call would have surfaced a schema error inside that dispatch), and the listener body is contained with anything swallowed logged.
 3. **A `catch` that is load-bearing must report.** A silent swallow hid a `require` that does not exist in ESM, leaving the row looking healthy while writing nothing.
-4. **Never assert a shape on external data.** The quota endpoint is untrusted: narrow with explicit checks, never `as`.
-5. **Typecheck before commit, not alongside tests.** Two commits shipped with a red `tsc` because the tests were green and `tsc` was not run.
+4. **The probe is the only source of truth for account state.** One boolean (`wasBlocked`) is the whole reset edge. An earlier design also read `agent/request-error` and `agent/error` to learn which session was blocked; that was a second source of truth that could disagree with the probe, and it needed provider-wording regexes, two channels, and an accepted limitation. Do not reintroduce it.
+5. **Never assert a shape on external data.** The quota endpoint is untrusted: narrow with explicit checks, never `as`.
+6. **Typecheck before commit.** Two commits shipped with a red `tsc` because something else was green and `tsc` was not run. `pnpm typecheck` is its own step; never infer it from anything else passing.
 
 ## Toolchain facts that cost time
 
@@ -71,7 +75,7 @@ Concretely, the loop that works:
 - **Runtime dsh imports are an allowlist of three**: `cordis` (`extends Service` is a real base class), `dsh-tools` (`defineTool`), `schemastery` (the Config schema evaluates at load). `scripts/build.mjs` asserts the emitted bundle imports nothing else — and it reads the **emitted specifiers**, not metafile inputs, because inputs are node_modules-relative paths and matching them silently finds nothing.
 - **`lib/` is tracked.** The profile links this checkout and nothing builds at install time, so the built entry point must be committed with its source.
 - **`pnpm` 11** needs `pnpm-workspace.yaml`'s `allowBuilds: { esbuild: true }` or esbuild's postinstall is skipped.
-- **A missing hard dependency is silent.** Without its injected service a fiber sits at `PENDING`, `plugin()` does not throw, and the row is inert while looking mounted. It was caught by adding `systemPrompt` and `tools` to `inject` and watching 14 tests fail.
+- **A missing hard dependency is silent.** Without its injected service a fiber sits at `PENDING`, `plugin()` does not throw, and the row is inert while looking mounted. It was caught by adding `systemPrompt` and `tools` to `inject` and watching the harness cases go red at PENDING.
 - The credential comes from `MINIMAX_API_KEY`, falling back to `~/.mmx/config.json` (the MiniMax CLI's own file). Without the fallback the row mounts and then reports every read as unauthenticated — mounted but blind.
 - `FiberState` is an ambient `const enum` whose members `isolatedModules` forbids reading; the numbers are written out.
 
@@ -91,11 +95,11 @@ Blocking on the unmapped status would halt every session for no reason. And the 
 ```sh
 pnpm install
 pnpm typecheck     # tsc -p tsconfig.json
-pnpm test          # vitest run — regression net, not the gate
 pnpm build         # esbuild bundle + declarations + runtime-import allowlist
-node scripts/smoke.mjs      # mount the BUILT bundle, drive a route change
+
+node scripts/smoke.mjs      # mount the BUILT bundle, drive a provider switch
+node scripts/wake-check.mjs # drive the blocked -> usable flip with a stub endpoint
 node scripts/live-probe.mjs # one real read through our own parser
-node scripts/mutate.mjs    # 37 mutations; exits non-zero if one survives
 ```
 
 ## Reference material
