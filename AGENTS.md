@@ -25,7 +25,7 @@ Subscription is **derived, not stored**: recomputed from the session's route on 
 
 ## Current state
 
-`feat/quota-groundup`, 12 commits, branch cut from `master` at `d9e8318`.
+`feat/quota-groundup`, 33 commits, branch cut from `master` at `d9e8318`.
 
 - Installed: `/home/john/.dsh/profiles/web/node_modules/dsh-quota` → symlink to the worktree; `lib/index.js` present; listed in profile `dependencies` and `dsh.profile.bundles`; `list_plugins` reports `fiberPhase: "active"`.
 - Verified against the **live** endpoint with no environment variable set: 4 rows, no error.
