@@ -32,6 +32,11 @@ Subscription is **derived, not stored**: recomputed from the session's route on 
 - Installed: `/home/john/.dsh/profiles/web/node_modules/dsh-quota` → symlink to the worktree; `lib/index.js` present; listed in profile `dependencies` and `dsh.profile.bundles`; `list_plugins` reports `fiberPhase: "active"`.
 - Verified against the **live** endpoint with no environment variable set: 4 rows, no error.
 - The wake **is** verified — `scripts/wake-check.mjs` drives the blocked→usable flip against the built bundle and asserts the delivered message. What is still unobserved is that flip happening against the *real* provider, which only occurs when the wall is hit.
+- **All three surfaces are verified against the running host.** Prompt line: reproduced verbatim from inside a live session's own runtime context after forcing the threshold (see below). Tool: called live, returning real endpoint numbers. Cold-session subscription: a session created after the restart carried `quota_status` in its `reason: "initial"` request header, 46 tools.
+
+**The prompt line is silent when healthy, and that is not a fault.** `renderQuotaStatus` returns `''` when nothing is blocked *and* no window is at or below `lowWaterMarkPercent` (20), and `dsh-system-prompt`'s `renderContextSections` drops empty contexts. At 91%/100% the line is correctly absent — which is indistinguishable, from the outside, from a registration that never resolved. To observe it: raise `lowWaterMarkPercent` above the current percentage, `plugin_manager set_bundle`, then ask a fresh session to reproduce its `Current runtime context.` block verbatim. Verified in both directions — at 100 the line appears, at 20 it vanishes.
+
+**Session logs cannot confirm the prompt line.** `system/message` records only the base prompt (it ends at "Your working directory is …"); runtime contexts are delivered to the model but never persisted. Grepping every log on the machine for `<provider-quota>` returns only this file's own documentation quoted into `user/message`. A witness session is the only instrument that sees the assembled prompt.
 
 Key documents: `docs/.superpowers/live-response-shape.md` (the measured endpoint shape, and the one trap it contains), `docs/.superpowers/specs/` and `plans/` (the design and the remaining plan), `docs/.superpowers/progress.md` (state ledger).
 
@@ -45,6 +50,9 @@ Found by reading the installed declarations and loading the built bundle. None o
 - **A nullable schema field is `oneOf: [{type:'number'}, {type:'null'}]`, never `type: ['number','null']`.** Legal types are a single value.
 - **`Context.plugin()` does not take `exports.default ?? exports`.** That is a *Loader* convenience. A namespace import of a Service class hands it an object with no `apply` and it refuses to mount.
 - **`fiber.update()` is typed `void`** and restarts behind the async `internal/update` waterfall, so `await fiber.update(...)` awaits `undefined` and reads the fiber mid-`UNLOADING`.
+- **`AssembleContext` is declared `{ scope?, signal? }` but carries `agent`.** `dsh-agent/lib/types/dispatch.js:92` returns `{ agent, scope: agent, signal }`, and `dsh-sandbox-policy` depends on `context.agent?.session`. The declared type hides it; read the installed implementation.
+
+**DEBUNKED — do not re-investigate: per-agent runtime contexts resolve fine for root sessions.** `agent.ctx.systemPrompt.context({ … })` looks like a subagent-only pattern, because `dsh-subagent` registers on a minted `childCtx`. It is not. `assembleContextFor` sets `scope: agent`, `dsh-scope`'s `Layers.effect` keys the layer by `scopeOf(agent.ctx)`, and `chainLayers(agent)` finds it — measured, with the line reproduced verbatim from inside a live session. An earlier diagnosis blamed this scope chain for a missing prompt line; the real cause was the low-water filter emptying the text. Re-read `format.ts` before blaming the scope machinery.
 
 ## How work is done here
 
@@ -62,7 +70,7 @@ Concretely, the loop that works:
 
 **Never call the oversized inspection tools casually.** `plugin_manager list_bundles`, `list_plugins` (195 entries) and `cordis_inspect_query Config.listConfigs` return payloads large enough to 500 the server through the tool bridge. Use targeted calls or `bash`.
 
-- **A linked local bundle's CODE cannot be reloaded; only its Config can.** `plugin_manager set_bundle` re-applies the patch, so a changed `cordis.patch.yml` takes effect immediately — a schedule edit visibly changed the poll interval within seconds. But the Loader caches the module it resolved at first install, so edits to `lib/index.js` and `src/` do **not** reach the running host: `set_bundle` reports `changed: false`, and neither `remove_bundle` + `install_bundle` nor changing `main`/`exports` to a new specifier (`lib/index.v2.js`) forces a fresh import. Only a host restart picks up new code. **This is a trap:** it makes a live test appear to pass or fail against code the host is not running. Confirm which build is live before believing any live observation.
+- **A linked local bundle's CODE cannot be reloaded; only its Config can.** `plugin_manager set_bundle` re-applies the patch, so a changed `cordis.patch.yml` takes effect immediately — measured, not assumed: `lowWaterMarkPercent` 20 → 100 → 20 each took effect within one probe interval, and the tool returned `changed: false` on **every** call including both that changed the value. **`changed: false` reports the enable stage, not the config; it does not mean the patch was skipped.** But the Loader caches the module it resolved at first install, so edits to `lib/index.js` and `src/` do **not** reach the running host: neither `remove_bundle` + `install_bundle` nor changing `main`/`exports` to a new specifier (`lib/index.v2.js`) forces a fresh import. Only a host restart picks up new code. **This is a trap:** it makes a live test appear to pass or fail against code the host is not running. Confirm which build is live before believing any live observation.
 
 ## Standards that earned their place here
 
