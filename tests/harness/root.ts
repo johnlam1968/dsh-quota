@@ -118,13 +118,63 @@ function observed(agent: FakeAgent, delivered: Delivery[]): Agent {
   } as unknown as Agent
 }
 
+/**
+ * The `systemPrompt` seam, reduced to the one call this row makes.
+ *
+ * `contexts` is the LIVE set: the disposer `context()` returns removes its own
+ * entry, so a case can prove a detached subscription unwound.
+ */
+export interface SystemPromptSeam {
+  readonly contexts: readonly { readonly name: string }[]
+  context(definition: { readonly name: string; readonly order?: number }): () => void
+}
+
+export function fakeSystemPrompt(): SystemPromptSeam {
+  const contexts: { name: string }[] = []
+  return {
+    contexts,
+    context(definition): () => void {
+      contexts.push({ name: definition.name })
+      return () => {
+        const index = contexts.findIndex(entry => entry.name === definition.name)
+        if (index !== -1) contexts.splice(index, 1)
+      }
+    },
+  }
+}
+
+/** The `tools` seam, reduced to `register` and its live set. */
+export interface ToolsSeam {
+  readonly registered: readonly { readonly name: string }[]
+  register(definition: { readonly name: string }): () => void
+}
+
+export function fakeTools(): ToolsSeam {
+  const registered: { name: string }[] = []
+  return {
+    registered,
+    register(definition): () => void {
+      registered.push({ name: definition.name })
+      return () => {
+        const index = registered.findIndex(entry => entry.name === definition.name)
+        if (index !== -1) registered.splice(index, 1)
+      }
+    },
+  }
+}
+
 /** A real Context with this row's injected services; `extra` adds or replaces. */
 export function makeRoot(extra: Record<string, unknown> = {}): Context {
   const root = new Context()
   // Merged before the first `provide`, not after: cordis refuses to provide a
   // name twice in one scope, so an `extra` seam must win the merge rather than
   // overwrite a default that is already registered.
-  const seams: Record<string, unknown> = { agents: fakeAgents(), ...extra }
+  const seams: Record<string, unknown> = {
+    agents: fakeAgents(),
+    systemPrompt: fakeSystemPrompt(),
+    tools: fakeTools(),
+    ...extra,
+  }
   for (const [name, value] of Object.entries(seams)) root.provide(name, value as never)
   return root
 }

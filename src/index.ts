@@ -2,19 +2,22 @@ import { rmSync, writeFileSync } from 'node:fs'
 
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
+import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
 import { Config, definePlan } from './config.js'
 import type { PlanDefinition, QuotaConfig } from './config.js'
 import { classifyQuota } from './probe.js'
-import { isUsable, windowsFor } from './derive.js'
+import { effectiveRows, isUsable, windowsFor } from './derive.js'
 import type { DeriveSpec } from './derive.js'
 import { nextDelay } from './schedule.js'
 import type { Schedule } from './schedule.js'
 import { matchesBlock } from './block.js'
 import type { FailureLike } from './block.js'
 import { noticeSummary, noticeText } from './notice.js'
+import { formatDuration, renderQuotaStatus } from './format.js'
 import { createQuotaNotice } from './message.js'
 import { EMPTY_STATE, settle, withBlock, withoutBlock } from './state.js'
 import type { EdgeNotice, QuotaState } from './state.js'
@@ -30,6 +33,25 @@ declare module '@deepseek-ai/cordis' {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     quota: QuotaService
+  }
+}
+
+/**
+ * HARNESS DECLARATION GAP (not ours to fix — reporting it instead).
+ *
+ * The runtime DOES append `model/selection`: `dsh-api-session-controller` calls
+ * `session.append('model/selection', selection)` on every model selection made
+ * through the Web UI picker or the `select_model` tool, and the event is listed
+ * in `dsh-session/lib/types/known-event-types.js`. But it is absent from the
+ * installed `SessionEventMap` in `dsh-session/lib/types/types.d.ts`, so
+ * TypeScript narrows `event.type === 'model/selection'` to `never` and the
+ * payload is unreachable. `docs/subsystems/session.md` documents the map as
+ * merge-extensible, so merging it back is the sanctioned shape; the payload
+ * below is the one observed in a real session log.
+ */
+declare module '@deepseek-ai/dsh-session' {
+  interface SessionEventMap {
+    'model/selection': { provider: string; model: string; reasoningEffort?: string }
   }
 }
 
@@ -61,6 +83,68 @@ function narrowFailure(error: unknown): FailureLike {
   }
 }
 
+/** What `quota_status` reports. Every field is required so it satisfies the schema. */
+interface StatusPayload {
+  readonly known: boolean
+  readonly provider: string
+  readonly usable: boolean
+  // A mutable array, because `InferValue` infers one from the schema's
+  // `type: 'array'` node and will not accept a `readonly` array back.
+  readonly windows: {
+    window: QuotaWindow
+    blocked: boolean
+    remainingPercent: number | null
+    resetsInMs: number | null
+  }[]
+}
+
+/**
+ * The shape `defineTool` INFERRS from `output.schema`.
+ *
+ * `InferValue` does not read the `required` array on an object node, so every
+ * property arrives optional even though the schema marks four of them
+ * required. Rather than cast at the boundary, the renderer states the looser
+ * shape it actually receives and tolerates the absent fields — the tool's own
+ * runtime validation still enforces the declared schema on every call.
+ */
+interface InferredStatus {
+  readonly usable?: boolean | undefined
+  readonly provider?: string | undefined
+  readonly known?: boolean | undefined
+  readonly windows?: readonly {
+    readonly window?: string | undefined
+    readonly blocked?: boolean | undefined
+    readonly remainingPercent?: number | null | undefined
+    readonly resetsInMs?: number | null | undefined
+  }[] | undefined
+}
+
+/** Turn a status payload into the one paragraph the model reads. */
+function renderStatusReport(payload: InferredStatus): string {
+  const provider = payload.provider ?? 'this provider'
+  if (payload.known !== true) {
+    return `No quota reading for ${provider} is available yet. Nothing is known about its usage windows; do not infer that requests would be refused.`
+  }
+  const lines = (payload.windows ?? []).map(row => {
+    const label = row.window === '5h' ? '5-hour' : (row.window ?? 'usage')
+    const pctText = row.remainingPercent === null || row.remainingPercent === undefined
+      ? 'remaining unreported'
+      : `${row.remainingPercent}% remaining`
+    if (row.blocked === true) {
+      return row.resetsInMs === null || row.resetsInMs === undefined
+        ? `${label} window: EXHAUSTED, no countdown reported`
+        : `${label} window: EXHAUSTED, resets in ${formatDuration(row.resetsInMs)}`
+    }
+    return row.resetsInMs === null || row.resetsInMs === undefined
+      ? `${label} window: open, ${pctText}`
+      : `${label} window: open, ${pctText}, resets in ${formatDuration(row.resetsInMs)}`
+  })
+  const head = payload.usable === true
+    ? `Requests to ${provider} are currently ACCEPTED.`
+    : `Requests to ${provider} are currently being REFUSED by a usage limit. This is temporary — do not retry in a loop.`
+  return [head, ...lines].join('\n')
+}
+
 /** Read the environment without letting an absent key read as an empty token. */
 function bearer(envName: string): string | undefined {
   const value = process.env[envName]
@@ -76,13 +160,15 @@ function bearer(envName: string): string | undefined {
  * message after a reset. A session that ignores it entirely is unaffected.
  */
 export default class QuotaService extends Service {
-  static inject = ['agents']
+  static inject = ['agents', 'systemPrompt', 'tools']
   static Config = Config
 
   private readonly config: QuotaConfig
   private readonly plan: PlanDefinition
   private state: QuotaState = EMPTY_STATE
   private accountBlocked = false
+  /** Session id → the disposers of its prompt line and tool, plus its model. */
+  private readonly bound = new Map<SessionId, { model: string; disposers: Array<() => void> }>()
 
   constructor(ctx: Context, config: QuotaConfig) {
     super(ctx, 'quota')
@@ -115,7 +201,135 @@ export default class QuotaService extends Service {
       this.recordBlock(agent.id, failure, agent.options.provider)
     })
 
+    this.ctx.on('agent/created', ({ agent }): undefined => {
+      // Subscription follows the session's route, so it has to be recomputed
+      // whenever that route changes rather than decided once. Two triggers:
+      //   model/selection — intent, appended by the selection funnel before the
+      //     next turn, so the first prompt assembly after a switch is correct.
+      //     (Its declaration is missing from the installed SessionEventMap; see
+      //     the merge above.)
+      //   request/context — commitment, written by the loop before dispatch on
+      //     every path. It lands AFTER that step's assembly, which is why
+      //     intent is observed too.
+      agent.ctx.on('session/event', (_session, event) => {
+        if (event.type === 'model/selection') {
+          this.reconcile(agent, event.data.provider, event.data.model)
+        }
+        if (event.type === 'request/context') {
+          this.reconcile(agent, event.data.provider, event.data.model)
+        }
+      })
+      // A resumed session may already have a committed route.
+      const current = agent.session.requestContext()
+      if (current !== undefined) this.reconcile(agent, current.provider, current.model)
+    })
+
     this.ctx.effect(() => this.armTimer())
+  }
+
+  /** Attach, refresh, or drop one session's quota surface. Idempotent. */
+  private reconcile(agent: Agent, provider: string, model: string): void {
+    if (provider !== this.config.provider) {
+      this.detach(agent.id)
+      return
+    }
+    const existing = this.bound.get(agent.id)
+    if (existing !== undefined) {
+      if (existing.model === model) return
+      // A model change within the same plan only needs the text refreshed; the
+      // tool schema and its registration stay exactly as they are.
+      existing.model = model
+      return
+    }
+
+    const disposers: Array<() => void> = []
+    disposers.push(
+      agent.ctx.systemPrompt.context({
+        name: 'quota-usage-status',
+        order: 900,
+        text: () => renderQuotaStatus(this.state.status, model, this.plan.derive, this.config.lowWaterMarkPercent),
+      }),
+    )
+    disposers.push(agent.ctx.tools.register(this.buildStatusTool(model)))
+    this.bound.set(agent.id, { model, disposers })
+  }
+
+  /** Drop a session's quota surface and its outstanding block record. */
+  private detach(sessionId: SessionId): void {
+    const existing = this.bound.get(sessionId)
+    if (existing === undefined) return
+    this.bound.delete(sessionId)
+    for (const dispose of [...existing.disposers].reverse()) dispose()
+    this.forget(sessionId)
+  }
+
+  /**
+   * The `quota_status` tool.
+   *
+   * The schema below is validated against `defineTool`'s guard: a nullable
+   * field is `oneOf: [{type:'number'},{type:'null'}]` and never
+   * `type: ['number','null']`, the parameter map is an implicit open object,
+   * and every nested object node declares `additionalProperties` explicitly.
+   */
+  private buildStatusTool(model: string): ToolDefinition {
+    return defineTool({
+      name: 'quota_status',
+      description:
+        'Report this session\'s provider usage-window state: whether requests are being refused, '
+        + 'the percent remaining in each window, and when each window resets. '
+        + 'Call this before concluding that a provider is unavailable — a usage limit is '
+        + 'temporary and announces its own reset.',
+      parameters: {},
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            known: { type: 'boolean' },
+            provider: { type: 'string' },
+            usable: { type: 'boolean' },
+            windows: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  window: { type: 'string' },
+                  blocked: { type: 'boolean' },
+                  remainingPercent: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                  resetsInMs: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+                },
+                required: ['window', 'blocked', 'remainingPercent', 'resetsInMs'],
+              },
+            },
+          },
+          required: ['known', 'provider', 'usable', 'windows'],
+        },
+        render: (_args, value) => [{ type: 'text', text: renderStatusReport(value) }],
+      },
+      // An arrow, not a method shorthand: a shorthand's `this` is the options
+      // object, not the row.
+      execute: async () => this.statusReport(model),
+    })
+  }
+
+  /** The one payload the tool and the prompt line both derive from. */
+  private statusReport(model: string): StatusPayload {
+    const status = this.state.status
+    if (status === null || status.error !== null) {
+      return { known: false, provider: this.config.provider, usable: true, windows: [] }
+    }
+    return {
+      known: true,
+      provider: status.provider,
+      usable: isUsable(status, model, this.plan.derive),
+      windows: effectiveRows(status.rows, model, this.plan.derive).map(row => ({
+        window: row.window,
+        blocked: row.blocked,
+        remainingPercent: row.remainingPercent,
+        resetsInMs: row.resetAt === null ? null : Math.max(0, row.resetAt - status.checkedAt),
+      })),
+    }
   }
 
   /** The current detached status, or null before the first read. */

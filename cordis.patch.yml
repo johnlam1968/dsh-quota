@@ -1,0 +1,22 @@
+# The composition row for this bundle.
+#
+# `insert: [rows]` APPENDS rows. A patch carrying a bare `- id:` instead
+# TARGETS an existing row, and a target matching nothing is warned about and
+# skipped — so a new row must be inserted, not targeted.
+- insert:
+    - id: dsh-quota
+      name: dsh-quota
+      config:
+        provider: minimax-cn
+        entry: general
+        endpoint: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+        authEnv: MINIMAX_API_KEY
+        lowWaterMarkPercent: 20
+        schedule:
+          divisor: 4
+          minIntervalMs: 15000
+          maxIntervalMs: 900000
+          skewMs: 30000
+          baseBackoffMs: 1000
+          maxBackoffMs: 300000
+          jitterRatio: 0.1

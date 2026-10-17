@@ -1,5 +1,4 @@
 node_modules/
-lib/
 *.log
 
 # Scratch progress ledgers stay out of the tree. Skill artefacts that are real
