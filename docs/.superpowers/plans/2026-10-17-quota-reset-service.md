@@ -295,15 +295,70 @@ export function statusPayload(status: PlanStatus | null, model: string, spec: De
 }
 ```
 
-**Ruling R2 — do not guess this body.** The writing-plans skill treats an elided
-step as a plan failure, and it is right here: the parameter DSL is dsh's own,
-not JSON Schema, and `ctx.tools.register` re-validates the definition at
-registration. Before writing it, read `@deepseek-ai/dsh-tools` README section
-"Register a tool" and the `ToolDefinition` declaration for the installed version.
+**Ruling R2 — RESOLVED. The body below is validated, not a guess.** Read
+`plugin_doc(topic='tools')` §3 and ran the draft through `plugin_validate`; it
+passes the real guard. Three rules that body encodes, each of which the first
+draft got wrong:
 
-Register it with `defineTool`, whose `description` is the model's only guide to *when* to call it. The instruction that matters is the one that prevents the halt:
+- **A nullable field is `oneOf: [{type:'number'}, {type:'null'}]`, never
+  `type: ['number','null']`.** Legal types are a single value from
+  `string | number | integer | boolean | null | array | object | json`. An
+  array of types throws at registration.
+- **The root `parameters` is an implicit open object.** Do not wrap it in
+  `{type:'object', properties:{…}}` — that raw form exists only for Code Mode
+  sandbox compatibility, and it takes `required` as an array on properties
+  that must not carry their own.
+- **Every nested object node declares `additionalProperties` explicitly**;
+  omitting it is an error, not a default.
 
-> `'… Call this before concluding that a provider is unavailable: a usage limit is temporary and announces its own reset.'`
+Also settled here: `exec` carries `exec.agent`, so the body reads the calling
+session directly and does **not** need `ctx.agents.currentInitiator()`.
+
+```ts
+defineTool({
+  name: 'quota_status',
+  description:
+    'Report this session\'s provider usage-window state: whether requests are being refused, '
+    + 'the percent remaining in each window, and when each window resets. Call this before '
+    + 'concluding that a provider is unavailable — a usage limit is temporary and announces '
+    + 'its own reset.',
+  parameters: {
+    window: { type: 'string', enum: ['5h', 'weekly'], description: 'Optional: report only this window.' },
+  },
+  output: {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        known: { type: 'boolean' },
+        provider: { type: 'string' },
+        usable: { type: 'boolean' },
+        windows: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              window: { type: 'string' },
+              blocked: { type: 'boolean' },
+              remainingPercent: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+              resetsInMs: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+            },
+            required: ['window', 'blocked', 'remainingPercent', 'resetsInMs'],
+          },
+        },
+      },
+      required: ['known', 'provider', 'usable', 'windows'],
+    },
+    render: (_args, value) => [{ type: 'text', text: formatStatusReport(value) }],
+  },
+  async execute(args, exec) { /* statusPayload(this.status(), exec.agent, …) */ },
+})
+```
+
+**Contract-tier lever:** `ctx.tools.execute({ callId, name, arguments, signal })`
+runs the full policy pipeline with no model in the loop, so Task 9b can exercise
+the registered tool the way the agent does rather than calling `execute` by hand.
 
 - [ ] **Step 4: Run, confirm pass, add mutations, commit**
 
@@ -342,6 +397,14 @@ verdict of its own."
       })
     })
 ```
+
+- [ ] **Step 1b: Two rules the plugin contract fixes**
+
+From `plugin_doc(topic='services')` §3.1 and §3.4: a waterfall listener **must**
+call `next()` even when it only observes, or it silently swallows everything
+downstream; and `session/event` plus a check on `event.type` is the documented
+way to observe durable session events like `model/selection` and
+`request/context` — they are NOT Cordis events and have no `ctx.on` name.
 
 - [ ] **Step 2: Implement `reconcile`, `attachSubscription`, `detachSubscription`**
 
@@ -387,19 +450,33 @@ Expected: bundle emitted, assertion passes, `tsc -p tsconfig.build.json` emits d
 
 **Files:** Create `cordis.patch.yml`
 
-- [ ] **Step 1: Write the patch**
+- [ ] **Step 1: Write the patch — with `insert`, not a bare `id`**
+
+Per the patch dialect: `insert: [rows]` **appends** rows, while a patch carrying
+an `id` and no `insert` **targets an existing row** with that id, and a target
+that matches nothing is warned about and **skipped**. A bare `- id: dsh-quota`
+would therefore compose nothing at all, silently.
 
 ```yaml
-- id: dsh-quota
-  name: dsh-quota
-  config:
-    provider: minimax-cn
-    entry: general
-    endpoint: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
-    authEnv: MINIMAX_API_KEY
-    blockPatterns: ['usage limit exceeded', '\b2056\b']
-    lowWaterMarkPercent: 20
+- insert:
+    - id: dsh-quota
+      name: dsh-quota
+      config:
+        provider: minimax-cn
+        entry: general
+        endpoint: https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains
+        authEnv: MINIMAX_API_KEY
+        blockPatterns: ['usage limit exceeded', '\b2056\b']
+        lowWaterMarkPercent: 20
 ```
+
+`package.json` must also declare the bundle:
+
+```json
+"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+```
+
+An inserted `name` that is a relative path is anchored beside the patch file.
 
 - [ ] **Step 2: Verify it composes**
 
