@@ -60,6 +60,8 @@ Concretely, the loop that works:
 
 **Never call the oversized inspection tools casually.** `plugin_manager list_bundles`, `list_plugins` (195 entries) and `cordis_inspect_query Config.listConfigs` return payloads large enough to 500 the server through the tool bridge. Use targeted calls or `bash`.
 
+- **A linked local bundle's CODE cannot be reloaded; only its Config can.** `plugin_manager set_bundle` re-applies the patch, so a changed `cordis.patch.yml` takes effect immediately — a schedule edit visibly changed the poll interval within seconds. But the Loader caches the module it resolved at first install, so edits to `lib/index.js` and `src/` do **not** reach the running host: `set_bundle` reports `changed: false`, and neither `remove_bundle` + `install_bundle` nor changing `main`/`exports` to a new specifier (`lib/index.v2.js`) forces a fresh import. Only a host restart picks up new code. **This is a trap:** it makes a live test appear to pass or fail against code the host is not running. Confirm which build is live before believing any live observation.
+
 ## Standards that earned their place here
 
 1. **Read seam contracts from the installed type definitions**, never from memory or a cookbook.
