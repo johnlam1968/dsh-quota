@@ -14,18 +14,23 @@ const HEALTHY = {
   current_interval_status: 1,
   current_interval_remaining_percent: 42,
   remains_time: 60_000,
+  current_weekly_status: 1,
+  current_weekly_remaining_percent: 100,
+  weekly_remains_time: 600_000_000,
 }
 
 describe('classifyQuota', () => {
   it('reports a healthy interval as unblocked with an absolute reset time', () => {
     const status = classifyQuota(response(HEALTHY), NOW, spec)
     expect(status.error).toBeNull()
-    expect(status.rows).toHaveLength(1)
-    const row = status.rows[0]
-    expect(row?.blocked).toBe(false)
-    expect(row?.remainingPercent).toBe(42)
+    expect(status.rows).toHaveLength(2) // 5h + weekly, one pair per entry
+    const interval = status.rows[0]
+    expect(interval?.window).toBe('5h')
+    expect(interval?.blocked).toBe(false)
+    expect(interval?.remainingPercent).toBe(42)
     // Absolute, not a duration: the scheduler compares it against a clock.
-    expect(row?.resetAt).toBe(NOW + 60_000)
+    expect(interval?.resetAt).toBe(NOW + 60_000)
+    expect(status.rows[1]?.window).toBe('weekly')
   })
 
   // MUTATION: drop `|| pct === 0` from the blocked derivation.
@@ -82,12 +87,52 @@ describe('classifyQuota', () => {
   })
 
   // MUTATION: widen the isRecord guard to accept arrays.
+  // MUTATION: consult `current_weekly_status` for the block decision.
+  it('never blocks the weekly window on its status alone', () => {
+    // Measured live: current_weekly_status was 3 while remaining_percent was
+    // 100. The weekly vocabulary is not the interval's, so status cannot block.
+    const status = classifyQuota(
+      response({ ...HEALTHY, current_weekly_status: 3, current_weekly_remaining_percent: 100 }),
+      NOW,
+      spec,
+    )
+    expect(status.error).toBeNull()
+    const weekly = status.rows.find(row => row.window === 'weekly')
+    expect(weekly?.remainingPercent).toBe(100)
+    expect(weekly?.blocked).toBe(false)
+  })
+
+  // MUTATION: drop `weeklyPct === 0` from the weekly block decision.
+  it('blocks the weekly window on zero percent', () => {
+    const status = classifyQuota(
+      response({ ...HEALTHY, current_weekly_remaining_percent: 0 }),
+      NOW,
+      spec,
+    )
+    expect(status.rows.find(row => row.window === 'weekly')?.blocked).toBe(true)
+  })
+
+  it('reads the weekly countdown into an absolute instant', () => {
+    const status = classifyQuota(response(HEALTHY), NOW, spec)
+    expect(status.rows.find(row => row.window === 'weekly')?.resetAt).toBe(NOW + 600_000_000)
+  })
+
+  // MUTATION: drop the second entry, losing video budgets entirely.
+  it('narrows every account entry, not only the account-wide one', () => {
+    const body = JSON.stringify({
+      model_remains: [HEALTHY, { ...HEALTHY, model_name: 'video' }],
+    })
+    const status = classifyQuota(body, NOW, spec)
+    expect(status.error).toBeNull()
+    expect(new Set(status.rows.map(r => r.entry))).toEqual(new Set(['general', 'video']))
+  })
+
   it('keeps a usable reading when extra unusable rows are present', () => {
     const body = JSON.stringify({
       model_remains: [7, null, 'nope', { no_model_name: true }, HEALTHY],
     })
     const status = classifyQuota(body, NOW, spec)
     expect(status.error).toBeNull()
-    expect(status.rows).toHaveLength(1)
+    expect(status.rows).toHaveLength(2)
   })
 })

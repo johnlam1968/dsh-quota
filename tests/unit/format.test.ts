@@ -4,7 +4,7 @@ import type { DeriveSpec } from '../../src/derive.js'
 import type { PlanStatus, WindowRow } from '../../src/types.js'
 
 const NOW = 1_700_000_000_000
-const spec: DeriveSpec = { entry: 'general', videoModelPatterns: [/^video-/i] }
+const spec: DeriveSpec = { entry: 'general', videoModelPatterns: [/^video-/i], videoEntry: 'video' }
 
 function status(over: Partial<PlanStatus> = {}): PlanStatus {
   return { provider: 'minimax-cn', checkedAt: NOW, rows: [], error: null, ...over }

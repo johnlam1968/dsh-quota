@@ -3,7 +3,7 @@ import { deriveUsable, effectiveRows, isUsable, nextResetAt, rowFor } from '../.
 import type { DeriveSpec } from '../../src/derive.js'
 import type { PlanStatus, WindowRow } from '../../src/types.js'
 
-const spec: DeriveSpec = { entry: 'general', videoModelPatterns: [/^video-/i] }
+const spec: DeriveSpec = { entry: 'general', videoModelPatterns: [/^video-/i], videoEntry: 'video' }
 const NOW = 1_700_000_000_000
 
 function row(over: Partial<WindowRow> = {}): WindowRow {
@@ -29,6 +29,23 @@ describe('deriveUsable', () => {
   // MUTATION: make a missing row count as blocked.
   it('treats an unread weekly window as not blocking', () => {
     expect(deriveUsable([row({ blocked: false })], 'MiniMax-M3', spec)).toBe(true)
+  })
+
+  // MUTATION: ignore the video entry and let video models read the account row.
+  it("reads a video model's budget from the video entry, not the account row", () => {
+    const rows = [
+      // The text model is out. A video model must not inherit that.
+      row({ entry: 'general', window: '5h', blocked: true, remainingPercent: 0 }),
+      row({ entry: 'general', window: 'weekly' }),
+      row({ entry: 'video', window: '5h', blocked: true, remainingPercent: 0 }),
+      row({ entry: 'video', window: 'weekly', remainingPercent: 90 }),
+    ]
+    // Weekly-only, and its own entry's weekly row is healthy.
+    expect(deriveUsable(rows, 'video-gen-1', spec)).toBe(true)
+    // The same rows with the video entry exhausted do block it.
+    const exhausted = [...rows]
+    exhausted[3] = row({ entry: 'video', window: 'weekly', blocked: true, remainingPercent: 0 })
+    expect(deriveUsable(exhausted, 'video-gen-1', spec)).toBe(false)
   })
 
   // MUTATION: drop the model-specific precedence from rowFor.

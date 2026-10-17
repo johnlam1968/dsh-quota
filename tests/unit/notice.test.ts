@@ -4,7 +4,7 @@ import type { NoticeFacts } from '../../src/notice.js'
 import type { PlanStatus, WindowRow } from '../../src/types.js'
 
 const NOW = 1_700_000_000_000
-const spec = { entry: 'general', videoModelPatterns: [/^video-/i] }
+const spec = { entry: 'general', videoModelPatterns: [/^video-/i], videoEntry: 'video' }
 
 /** Healthy rows: the reset already happened, which is the whole point. */
 function row(over: Partial<WindowRow> = {}): WindowRow {

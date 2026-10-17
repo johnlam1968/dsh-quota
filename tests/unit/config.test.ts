@@ -32,7 +32,7 @@ describe('Config', () => {
     expect(Object.keys(config).sort()).toEqual([
       'authEnv', 'blockPatterns', 'endpoint', 'entry', 'lowWaterMarkPercent',
       'markerPath', 'provider', 'readAttempts', 'requestTimeoutMs', 'schedule',
-      'videoModelPatterns',
+      'videoEntry', 'videoModelPatterns',
     ])
     expect(Object.keys(config.schedule).sort()).toEqual([
       'baseBackoffMs', 'divisor', 'jitterRatio', 'maxBackoffMs',

@@ -56,6 +56,7 @@ export default class QuotaService extends Service {
         requestTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         readAttempts: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         videoModelPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;
+        videoEntry: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         blockPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;
         lowWaterMarkPercent: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         schedule: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{
@@ -84,6 +85,7 @@ export default class QuotaService extends Service {
         requestTimeoutMs: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         readAttempts: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         videoModelPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;
+        videoEntry: import("@deepseek-ai/schemastery").default<string, string, "defined">;
         blockPatterns: import("@deepseek-ai/schemastery").default<string[], string[], "defined">;
         lowWaterMarkPercent: import("@deepseek-ai/schemastery").default<number, number, "defined">;
         schedule: import("@deepseek-ai/schemastery").default<Schemastery.ObjectS<NoInfer<{

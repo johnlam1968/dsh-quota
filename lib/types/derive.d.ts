@@ -8,6 +8,12 @@ export interface DeriveSpec {
      * the 5-hour window, so a blocked 5-hour interval does not stop them.
      */
     readonly videoModelPatterns: readonly RegExp[];
+    /**
+     * The `model_remains[]` entry carrying video budgets, or null when the
+     * provider reports none. Observed live: a `video` entry sits alongside
+     * `general` with its own interval and weekly counters.
+     */
+    readonly videoEntry: string | null;
 }
 /** Whether this model is governed by the weekly window alone. */
 export declare function isVideoModel(model: string, spec: DeriveSpec): boolean;

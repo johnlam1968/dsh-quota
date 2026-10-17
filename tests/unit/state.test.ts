@@ -6,7 +6,7 @@ import type { BlockRecord } from '../../src/types.js'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 const NOW = 1_700_000_000_000
-const spec = { entry: 'general', videoModelPatterns: [/^video-/i] }
+const spec = { entry: 'general', videoModelPatterns: [/^video-/i], videoEntry: 'video' }
 const S1 = SessionId('session-one')
 const S2 = SessionId('session-two')
 

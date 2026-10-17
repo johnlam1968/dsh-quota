@@ -30,7 +30,14 @@ export const Config = z.object({
   readAttempts: z.natural().min(1).default(3),
 
   /** Models exempt from the 5-hour window, i.e. subject to the weekly one only. */
-  videoModelPatterns: z.array(z.string()).default([]),
+  videoModelPatterns: z.array(z.string()).default(['^video$', '-video', 'video-']),
+
+  /**
+   * The `model_remains[]` entry holding video budgets. Observed live alongside
+   * `general`. Empty disables video-entry routing, leaving video models on the
+   * account-wide row.
+   */
+  videoEntry: z.string().default('video'),
 
   /**
    * Regex sources recognising a usage-limit refusal the adapter did NOT
@@ -91,6 +98,7 @@ export interface QuotaConfig {
   requestTimeoutMs: number
   readAttempts: number
   videoModelPatterns: string[]
+  videoEntry: string
   blockPatterns: string[]
   lowWaterMarkPercent: number
   schedule: {
@@ -111,6 +119,7 @@ export interface PlanDefinition {
   readonly derive: {
     readonly entry: string
     readonly videoModelPatterns: readonly RegExp[]
+  readonly videoEntry: string | null
   }
   readonly blockPatterns: readonly RegExp[]
   readonly schedule: ScheduleConfig
@@ -148,6 +157,7 @@ export function definePlan(config: QuotaConfig): PlanDefinition {
     derive: {
       entry: config.entry,
       videoModelPatterns: compile(config.videoModelPatterns, 'i'),
+      videoEntry: config.videoEntry === '' ? null : config.videoEntry,
     },
     blockPatterns: compile(config.blockPatterns, 'i'),
     schedule: {

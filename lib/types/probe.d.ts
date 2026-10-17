@@ -12,11 +12,18 @@ export interface ProbeSpec {
  * status whose only populated field is `error`. The endpoint is untrusted
  * input, so every field is narrowed by an explicit check and nothing is cast.
  *
- * Only the rolling 5-hour interval is read. The provider reports weekly
- * headroom separately and it can read 100% while the interval is blocked, so
- * inferring a block from it would be wrong in both directions. Until the
- * weekly field path is confirmed against a live response, `derive.ts` treats
- * an absent weekly row as "not blocked" — the conservative direction, since
- * only a confirmed row ever blocks.
+ * `model_remains` holds one entry per account group — `general` and `video`
+ * were both observed — and every entry carries BOTH windows as parallel field
+ * families. See `docs/.superpowers/live-response-shape.md` for the measured
+ * shape; it replaces an earlier guess that the weekly window lived elsewhere.
+ *
+ * The two windows block on DIFFERENT evidence, which is not a stylistic choice.
+ * Measured: `current_interval_status` reads 1 when healthy and 2 when
+ * exhausted, but `current_weekly_status` was observed sitting on **3** while
+ * `current_weekly_remaining_percent` read **100**. The weekly vocabulary is
+ * therefore not shared with the interval's and cannot be mapped without
+ * actually hitting the wall, so the weekly row blocks on percentage alone and
+ * keeps status for diagnostics only. Blocking on an unmapped status would halt
+ * every session for no reason; the asymmetry is the safe direction.
  */
 export declare function classifyQuota(body: string, now: number, spec: ProbeSpec): PlanStatus;

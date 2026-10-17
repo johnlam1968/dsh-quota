@@ -9,6 +9,12 @@ export interface DeriveSpec {
    * the 5-hour window, so a blocked 5-hour interval does not stop them.
    */
   readonly videoModelPatterns: readonly RegExp[]
+  /**
+   * The `model_remains[]` entry carrying video budgets, or null when the
+   * provider reports none. Observed live: a `video` entry sits alongside
+   * `general` with its own interval and weekly counters.
+   */
+  readonly videoEntry: string | null
 }
 
 /** Whether this model is governed by the weekly window alone. */
@@ -36,8 +42,15 @@ export function rowFor(
   spec: DeriveSpec,
   window: QuotaWindow,
 ): WindowRow | undefined {
+  const video = isVideoModel(model, spec) ? spec.videoEntry : null
   return (
     rows.find(row => row.entry === model && row.window === window) ??
+    // A video model's budget lives in its own entry, so it outranks the
+    // account-wide row; otherwise a video model would be judged by the text
+    // model's 5-hour interval, which does not gate it at all.
+    (video === null
+      ? undefined
+      : rows.find(row => row.entry === video && row.window === window)) ??
     rows.find(row => row.entry === spec.entry && row.window === window)
   )
 }
