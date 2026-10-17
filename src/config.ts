@@ -33,12 +33,20 @@ export const Config = z.object({
   videoModelPatterns: z.array(z.string()).default([]),
 
   /**
-   * Regex sources recognising the provider's usage-limit refusal. Provider
-   * wording drifts, and a specific vendor's code arrives inside `message`
-   * rather than in the provider-neutral `code` field, so these match across
-   * all three failure fields.
+   * Regex sources recognising a usage-limit refusal the adapter did NOT
+   * already classify.
+   *
+   * The adapter normalises provider wording into `QUOTA` /
+   * `ACCOUNT_QUOTA` before the failure reaches this row, and those codes are
+   * matched exactly in code — see `HARNESS_QUOTA_CODES`. These patterns are
+   * only the net for providers or builds that classify nothing, so they
+   * carry provider prose rather than a normalised code.
    */
-  blockPatterns: z.array(z.string()).default(['usage limit exceeded', '\\b2056\\b']),
+  blockPatterns: z.array(z.string()).default([
+    'usage limit exceeded',
+    '\\b2056\\b',
+    'insufficient[\\s_-]+(?:quota|balance|credits?)',
+  ]),
 
   /** Below this remaining percent, a healthy plan is worth mentioning. */
   lowWaterMarkPercent: z.number().min(0).max(100).default(20),

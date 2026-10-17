@@ -1,7 +1,7 @@
+import { rmSync, writeFileSync } from 'node:fs'
+
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContextFormed } from '@deepseek-ai/dsh-llm'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
@@ -13,17 +13,12 @@ import type { DeriveSpec } from './derive.js'
 import { nextDelay } from './schedule.js'
 import type { Schedule } from './schedule.js'
 import { matchesBlock } from './block.js'
+import type { FailureLike } from './block.js'
 import { noticeSummary, noticeText } from './notice.js'
+import { createQuotaNotice } from './message.js'
 import { EMPTY_STATE, settle, withBlock, withoutBlock } from './state.js'
 import type { EdgeNotice, QuotaState } from './state.js'
 import type { BlockRecord, PlanStatus, QuotaWindow } from './types.js'
-
-declare module '@deepseek-ai/dsh-llm' {
-  interface MessageSourceMap {
-    /** A quota reset announcement delivered into a session. */
-    'quota-notice': { kind: 'quota-notice' } & ContextFormed
-  }
-}
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
@@ -35,6 +30,34 @@ declare module '@deepseek-ai/cordis' {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     quota: QuotaService
+  }
+}
+
+/**
+ * Narrow the `unknown` on `agent/error` to the fields block matching reads.
+ *
+ * That channel carries the raw thrown value, never an `LlmFailure`, so every
+ * field is checked explicitly and nothing is asserted. A thrown
+ * `LlmError` keeps its own `failure`; anything else is flattened to its
+ * message with an unknown code, which will not match a quota pattern — the
+ * conservative outcome.
+ */
+function narrowFailure(error: unknown): FailureLike {
+  if (typeof error !== 'object' || error === null) {
+    return { code: 'UNKNOWN', message: error instanceof Error ? error.message : String(error) }
+  }
+  const failure = (error as { failure?: unknown }).failure
+  if (typeof failure === 'object' && failure !== null) {
+    const f = failure as Record<string, unknown>
+    if (typeof f['code'] === 'string' && typeof f['message'] === 'string') {
+      const status = typeof f['status'] === 'number' ? f['status'] : undefined
+      return { code: f['code'], message: f['message'], ...(status === undefined ? {} : { status }) }
+    }
+  }
+  const message = (error as { message?: unknown }).message
+  return {
+    code: typeof (error as { code?: unknown }).code === 'string' ? (error as { code: string }).code : 'UNKNOWN',
+    message: typeof message === 'string' ? message : String(error),
   }
 }
 
@@ -66,11 +89,30 @@ export default class QuotaService extends Service {
     this.config = config
     this.plan = definePlan(config)
 
-    // Observing failures is the whole trigger for the wake: this is the one
-    // place the provider's refusal reaches us, and it carries the session.
+    // Two channels, because one is not enough.
+    //
+    // `agent/request-error` fires only when the stream ends with
+    // finish.kind === 'error' | 'aborted' — an IN-BAND refusal, and the only
+    // channel that carries a structured `failure` and the provider.
+    //
+    // A THROWN transport or protocol failure never reaches it. In the
+    // installed loop the waterfall sits inside the post-stream settle path,
+    // guarded by exactly that finish check; a throw jumps past it, is
+    // recorded as turn/end {kind:'error'}, and surfaces only as `agent/error`,
+    // whose payload has no `failure` at all. A session stranded by a dropped
+    // connection is precisely the case this row exists for, so both are
+    // observed.
     this.ctx.on('agent/request-error', async (payload, next) => {
-      this.recordBlock(payload.agent.id, payload.failure)
+      this.recordBlock(payload.agent.id, payload.failure, payload.provider)
       return await next()
+    })
+
+    this.ctx.on('agent/error', ({ agent, error }) => {
+      const failure = narrowFailure(error)
+      // No provider on this channel, so only the current route can be
+      // checked. A session on another route cannot have been blocked by this
+      // plan's quota in the first place.
+      this.recordBlock(agent.id, failure, agent.options.provider)
     })
 
     this.ctx.effect(() => this.armTimer())
@@ -193,8 +235,19 @@ export default class QuotaService extends Service {
     }
   }
 
-  /** Remember that a session was refused, so its reset can wake it. */
-  private recordBlock(sessionId: SessionId, failure: { message: string; code: string; status?: number }): void {
+  /**
+   * Remember that a session was refused, so its reset can wake it.
+   *
+   * `provider` is the route that served the failed request. A failure from a
+   * route this row does not watch is not ours to record — a blocked session
+   * on a fallback provider must not be woken by this plan's reset.
+   */
+  private recordBlock(
+    sessionId: SessionId,
+    failure: FailureLike,
+    provider: string | undefined,
+  ): void {
+    if (provider !== undefined && provider !== this.config.provider) return
     if (!matchesBlock(failure, this.plan.blockPatterns)) return
     const agent = this.ctx.agents.get(sessionId)
     const model = agent?.options.model ?? ''
@@ -231,16 +284,7 @@ export default class QuotaService extends Service {
   private deliver(notice: EdgeNotice): void {
     const agent = this.ctx.agents.get(notice.sessionId)
     if (agent === undefined) return
-    agent.followup(
-      createUserMessage({
-        content: [{ type: 'text', text: noticeText(notice.facts) }],
-        source: {
-          kind: 'quota-notice',
-          form: 'notice',
-          summary: noticeSummary(notice.facts),
-        },
-      }),
-    )
+    agent.followup(createQuotaNotice(noticeText(notice.facts), noticeSummary(notice.facts)))
   }
 
   /** Drop a session's outstanding record, e.g. because it changed route. */
@@ -260,8 +304,12 @@ export default class QuotaService extends Service {
       const { writeFileSync, rmSync } = require('node:fs') as typeof import('node:fs')
       if (this.accountBlocked) writeFileSync(this.config.markerPath, String(Date.now()))
       else rmSync(this.config.markerPath, { force: true })
-    } catch {
-      // Persistence is an optimisation; the in-memory state remains correct.
+    } catch (error) {
+      // Persistence is an optimisation: the in-memory state stays correct
+      // without it. But a silent swallow here once hid a `require` that does
+      // not exist in ESM, so this row looked healthy while writing nothing.
+      // Anything swallowed is now reported.
+      this.ctx.logger?.warn('dsh-quota: could not update the blocked-window marker', error)
     }
   }
 }

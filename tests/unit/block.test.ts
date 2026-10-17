@@ -28,9 +28,24 @@ describe('matchesBlock', () => {
     expect(matchesBlock({ code: 'TIMEOUT', status: 504, message: 'upstream timed out' }, [LIMIT, CODE])).toBe(false)
   })
 
+  // MUTATION: delete the HARNESS_QUOTA_CODES check.
+  it('matches the harness-normalised code with no patterns configured at all', () => {
+    // The adapter maps MiniMax's raw `2056 usage limit exceeded` to QUOTA via
+    // isQuotaExceededError, so the raw vendor code never reaches `code`.
+    expect(matchesBlock({ code: 'QUOTA', message: 'anything at all' }, [])).toBe(true)
+    expect(matchesBlock({ code: 'ACCOUNT_QUOTA', message: '' }, [])).toBe(true)
+    // ...while an unrelated normalised code still needs a pattern.
+    expect(matchesBlock({ code: 'RATE_LIMIT', message: 'slow down' }, [])).toBe(false)
+  })
+
+  // MUTATION: match any code containing 'QUOTA'.
+  it('does not treat a code that merely mentions quota as exhausted', () => {
+    expect(matchesBlock({ code: 'QUOTA_PROBE', message: '' }, [])).toBe(false)
+  })
+
   // MUTATION: return true when no patterns are configured.
   it('matches nothing when no pattern is configured', () => {
-    expect(matchesBlock(EXHAUSTED, [])).toBe(false)
+    expect(matchesBlock({ code: 'PROVIDER_ERROR', message: 'connection reset' }, [])).toBe(false)
   })
 
   // MUTATION: delete the `pattern.lastIndex = 0` reset.
