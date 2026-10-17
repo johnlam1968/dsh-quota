@@ -52,10 +52,3 @@ export interface PlanStatus {
  * so a status snapshot at wake time cannot say which window expired — only
  * this record can.
  */
-export interface BlockRecord {
-  readonly window: QuotaWindow
-  readonly model: string
-  readonly since: number
-  readonly code: string
-  readonly message: string
-}

@@ -286,7 +286,7 @@ export default class QuotaService extends Service {
     this.bound.set(agent.id, { model, disposers })
   }
 
-  /** Drop a session's quota surface and its outstanding block record. */
+  /** Drop a session's quota surface: its prompt line and its tool. */
   private detach(sessionId: SessionId): void {
     const existing = this.bound.get(sessionId)
     if (existing === undefined) return
@@ -390,10 +390,11 @@ export default class QuotaService extends Service {
       return nextDelay(next, true, now, this.plan.schedule, this.errorStreak, Math.random())
     }
     this.errorStreak = 0
+    const previous = this.latest
     this.latest = next
 
     const blocked = !isUsable(next, this.plan.probe.entry, this.plan.derive)
-    if (this.wasBlocked && !blocked) this.onReset(next)
+    if (this.wasBlocked && !blocked) this.onReset(next, previous)
     this.wasBlocked = blocked
 
     this.ctx.emit('quota/changed', { status: next })
@@ -411,7 +412,16 @@ export default class QuotaService extends Service {
    *   - the announcement is already hedged about whether this session's work
    *     was the thing that got cut off.
    */
-  private onReset(recovered: PlanStatus): void {
+  private onReset(recovered: PlanStatus, previous: PlanStatus | null): void {
+    // Which window recovered. At this point every row reads healthy, so the
+    // CURRENT status cannot answer it — it has to come from the reading before
+    // the edge: a window that was blocked then and is not blocked now.
+    const window = previous?.rows.find(
+      (row) => row.blocked && !recovered.rows.some((r) => r.window === row.window && r.blocked),
+    )?.window
+
+    if (window === undefined) return   // no window to name: say nothing rather than guess
+
     for (const agent of this.ctx.agents.list()) {
       if (agent.options.provider !== this.config.provider) continue
       if (agent.status !== 'idle') continue
@@ -425,13 +435,7 @@ export default class QuotaService extends Service {
             model,
             spec: this.plan.derive,
             status: recovered,
-            record: {
-              window: '5h',
-              model,
-              since: recovered.checkedAt,
-              code: 'USAGE_LIMIT',
-              message: 'the usage window was exhausted',
-            },
+            window,
           }),
           `${this.config.provider} usage window reset — blocked work may resume`,
         ),

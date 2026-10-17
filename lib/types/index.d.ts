@@ -130,7 +130,7 @@ export default class QuotaService extends Service {
     constructor(ctx: Context, config: QuotaConfig);
     /** Attach, refresh, or drop one session's quota surface. Idempotent. */
     private reconcile;
-    /** Drop a session's quota surface and its outstanding block record. */
+    /** Drop a session's quota surface: its prompt line and its tool. */
     private detach;
     /** The one payload the tool and the prompt line both derive from. */
     private statusReport;

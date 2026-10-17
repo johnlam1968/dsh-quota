@@ -91,8 +91,11 @@ fail('the wake is a user-role message', message?.role === 'user')
 fail('…carrying this row\'s own source kind', message?.source?.kind === 'quota-notice')
 fail('…in notice form, with a one-line summary', message?.source?.form === 'notice' && typeof message?.source?.summary === 'string')
 const text = message?.content?.[0]?.text ?? ''
-fail('…announcing the reset', text.includes('usage window has reset'))
+fail('…announcing the reset', text.includes('usage window was exhausted and has reset'))
+fail('…and asserting no refusal it never observed', !text.includes('previous turn was refused'))
 fail('…and pointing at resuming', text.includes('pick it up exactly where it stopped'))
+
+console.log('\n--- the delivered notice ---\n' + text + '\n')
 
 await fiber.dispose()
 console.log(process.exitCode ? '\nwake-check: FAILED' : '\nwake-check: all checks passed')
