@@ -115,21 +115,15 @@ export default class QuotaService extends Service {
     private accountBlocked;
     /** Session id → the disposers of its prompt line and tool, plus its model. */
     private readonly bound;
+    /** Built once at mount; see the constructor for why it is not per-session. */
+    private readonly statusTool;
+    /** Used only when a tool call arrives with no agent, which should not happen. */
+    private readonly fallbackModel;
     constructor(ctx: Context, config: QuotaConfig);
     /** Attach, refresh, or drop one session's quota surface. Idempotent. */
     private reconcile;
     /** Drop a session's quota surface and its outstanding block record. */
     private detach;
-    /**
-     * The `quota_status` tool.
-     *
-     * Two rules the guard enforces here, both found by loading the built bundle
-     * rather than by reading docs: a nullable field is
-     * `oneOf: [{type:'number'},{type:'null'}]` and never `type: ['number','null']`,
-     * and an `output.schema` object node carries NO `required` — the value schema
-     * DSL rejects it at registration.
-     */
-    private buildStatusTool;
     /** The one payload the tool and the prompt line both derive from. */
     private statusReport;
     /** The current detached status, or null before the first read. */

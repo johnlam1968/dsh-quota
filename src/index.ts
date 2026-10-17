@@ -192,6 +192,10 @@ export default class QuotaService extends Service {
   private accountBlocked = false
   /** Session id → the disposers of its prompt line and tool, plus its model. */
   private readonly bound = new Map<SessionId, { model: string; disposers: Array<() => void> }>()
+  /** Built once at mount; see the constructor for why it is not per-session. */
+  private readonly statusTool: ToolDefinition
+  /** Used only when a tool call arrives with no agent, which should not happen. */
+  private readonly fallbackModel = ''
 
   constructor(ctx: Context, config: QuotaConfig) {
     super(ctx, 'quota')
@@ -224,7 +228,12 @@ export default class QuotaService extends Service {
       this.recordBlock(agent.id, failure, agent.options.provider)
     })
 
+    // `agent/created` is a SERIAL dispatch: a throw here FAILS THE CREATION,
+    // so a defect in an advisory plugin would take down every new session in
+    // the host. Everything below is therefore contained, and anything it
+    // swallows is reported rather than lost.
     this.ctx.on('agent/created', ({ agent }): undefined => {
+     try {
       // Subscription follows the session's route, so it has to be recomputed
       // whenever that route changes rather than decided once. Two triggers:
       //   model/selection — intent, appended by the selection funnel before the
@@ -245,58 +254,17 @@ export default class QuotaService extends Service {
       // A resumed session may already have a committed route.
       const current = agent.session.requestContext()
       if (current !== undefined) this.reconcile(agent, current.provider, current.model)
+     } catch (error) {
+      this.ctx.logger?.warn('dsh-quota: could not subscribe a session; continuing without it', error)
+     }
     })
 
-    this.ctx.effect(() => this.armTimer())
-  }
-
-  /** Attach, refresh, or drop one session's quota surface. Idempotent. */
-  private reconcile(agent: Agent, provider: string, model: string): void {
-    if (provider !== this.config.provider) {
-      this.detach(agent.id)
-      return
-    }
-    const existing = this.bound.get(agent.id)
-    if (existing !== undefined) {
-      if (existing.model === model) return
-      // A model change within the same plan only needs the text refreshed; the
-      // tool schema and its registration stay exactly as they are.
-      existing.model = model
-      return
-    }
-
-    const disposers: Array<() => void> = []
-    disposers.push(
-      agent.ctx.systemPrompt.context({
-        name: 'quota-usage-status',
-        order: 900,
-        text: () => renderQuotaStatus(this.state.status, model, this.plan.derive, this.config.lowWaterMarkPercent),
-      }),
-    )
-    disposers.push(agent.ctx.tools.register(this.buildStatusTool(model)))
-    this.bound.set(agent.id, { model, disposers })
-  }
-
-  /** Drop a session's quota surface and its outstanding block record. */
-  private detach(sessionId: SessionId): void {
-    const existing = this.bound.get(sessionId)
-    if (existing === undefined) return
-    this.bound.delete(sessionId)
-    for (const dispose of [...existing.disposers].reverse()) dispose()
-    this.forget(sessionId)
-  }
-
-  /**
-   * The `quota_status` tool.
-   *
-   * Two rules the guard enforces here, both found by loading the built bundle
-   * rather than by reading docs: a nullable field is
-   * `oneOf: [{type:'number'},{type:'null'}]` and never `type: ['number','null']`,
-   * and an `output.schema` object node carries NO `required` — the value schema
-   * DSL rejects it at registration.
-   */
-  private buildStatusTool(model: string): ToolDefinition {
-    return defineTool({
+    // Built ONCE here rather than per subscription. defineTool validates its
+    // definition at call time, so a per-subscription call would surface a
+    // schema error during `agent/created` — a SERIAL dispatch, where a throw
+    // FAILS SESSION CREATION rather than just this plugin. At mount it can
+    // only fail this fiber.
+    this.statusTool = defineTool({
       name: 'quota_status',
       description:
         'Report this session\'s provider usage-window state: whether requests are being refused, '
@@ -329,10 +297,51 @@ export default class QuotaService extends Service {
         },
         render: (_args, value) => [{ type: 'text', text: renderStatusReport(value) }],
       },
-      // An arrow, not a method shorthand: a shorthand's `this` is the options
-      // object, not the row.
-      execute: async () => this.statusReport(model),
+      // The model comes from the CALLING agent, not a closure — which is what
+      // lets one definition serve every session.
+      execute: async (_args, exec) => {
+        const model = (exec.agent as Agent | undefined)?.options.model ?? this.fallbackModel
+        return this.statusReport(model)
+      },
     })
+
+    this.ctx.effect(() => this.armTimer())
+  }
+
+  /** Attach, refresh, or drop one session's quota surface. Idempotent. */
+  private reconcile(agent: Agent, provider: string, model: string): void {
+    if (provider !== this.config.provider) {
+      this.detach(agent.id)
+      return
+    }
+    const existing = this.bound.get(agent.id)
+    if (existing !== undefined) {
+      if (existing.model === model) return
+      // A model change within the same plan only needs the text refreshed; the
+      // tool schema and its registration stay exactly as they are.
+      existing.model = model
+      return
+    }
+
+    const disposers: Array<() => void> = []
+    disposers.push(
+      agent.ctx.systemPrompt.context({
+        name: 'quota-usage-status',
+        order: 900,
+        text: () => renderQuotaStatus(this.state.status, model, this.plan.derive, this.config.lowWaterMarkPercent),
+      }),
+    )
+    disposers.push(agent.ctx.tools.register(this.statusTool))
+    this.bound.set(agent.id, { model, disposers })
+  }
+
+  /** Drop a session's quota surface and its outstanding block record. */
+  private detach(sessionId: SessionId): void {
+    const existing = this.bound.get(sessionId)
+    if (existing === undefined) return
+    this.bound.delete(sessionId)
+    for (const dispose of [...existing.disposers].reverse()) dispose()
+    this.forget(sessionId)
   }
 
   /** The one payload the tool and the prompt line both derive from. */
