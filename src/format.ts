@@ -80,16 +80,21 @@ export function renderQuotaStatus(
 
   const usable = isUsable(status, model, spec)
   const phrase = windowPhrase(status, model, spec)
-  if (phrase === null) return ''
+  // Named every time. The row watches exactly one provider, but the agent
+  // reading this line does not know that — an unattributed number is a number
+  // it cannot act on or check.
+  const who = `${status.provider} — `
 
   if (!usable) {
     return (
-      `<provider-quota>${phrase}. `
+      `<provider-quota>${who}${phrase ?? 'usage window exhausted'}. `
       + `Requests to this provider are being refused until it resets; `
       + `this is a quota limit, not a fault. Do not retry in a loop — `
       + `work on something else, or wait for the reset.</provider-quota>`
     )
   }
+
+  if (phrase === null) return ''
 
   const low = effectiveRows(status.rows, model, spec).some(
     row => !row.blocked && row.remainingPercent !== null && row.remainingPercent <= lowWaterMarkPercent,
@@ -97,9 +102,9 @@ export function renderQuotaStatus(
 
   return low
     ? (
-        `<provider-quota>${phrase}. `
+        `<provider-quota>${who}${phrase}. `
         + `Usage is low enough to be worth pacing; `
         + `save the remaining budget for work that needs this model.</provider-quota>`
       )
-    : `<provider-quota>${phrase}. Requests to this provider are being accepted.</provider-quota>`
+    : `<provider-quota>${who}${phrase}. Requests to this provider are being accepted.</provider-quota>`
 }

@@ -176,8 +176,13 @@ console.log('PASS  re-subscribed on the switch back')
   const second = def.text()
   const third = def.text()
 
-  if (first === '' || !first.includes('<provider-quota>') || !first.includes('87')) {
-    console.error(`FAIL  the opening briefing did not carry the reading: ${JSON.stringify(first)}`)
+  if (
+    first === ''
+    || !first.includes('<provider-quota>')
+    || !first.includes('87')
+    || !first.startsWith('<provider-quota>minimax-cn — ')
+  ) {
+    console.error(`FAIL  the opening briefing did not carry the reading, attributed: ${JSON.stringify(first)}`)
     process.exit(1)
   }
   console.log(`PASS  opening briefing carries the live reading: ${first.slice(0, 120)}…`)
