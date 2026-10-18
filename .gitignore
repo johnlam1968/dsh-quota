@@ -1,9 +1,10 @@
 node_modules/
 *.log
 
-# Scratch progress ledgers stay out of the tree. Skill artefacts that are real
-# deliverables — the spec and the plan — live under docs/.superpowers/ and ARE
-# tracked, so the bare `.superpowers/` pattern below would swallow them.
-.superpowers/*
-!docs/.superpowers/
-!docs/.superpowers/**
+# Working material, not part of the package.
+docs/
+.worktrees/
+AGENTS.md
+
+# Build output. `pnpm prepare` rebuilds it on install and on pack.
+lib/

@@ -83,9 +83,6 @@ export const Config = z.object({
     /** Fractional spread on every delay, so two hosts do not sync up. */
     jitterRatio: z.number().min(0).max(0.5).default(0.1),
   }).default({}),
-
-  /** Where the blocked-window marker is written. Empty disables persistence. */
-  markerPath: z.string().default(''),
 })
 
 /**
@@ -120,7 +117,6 @@ export interface QuotaConfig {
     maxBackoffMs: number
     jitterRatio: number
   }
-  markerPath: string
 }
 
 /** Compiled from config once, at construction. */

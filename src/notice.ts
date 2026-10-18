@@ -25,20 +25,8 @@ export interface NoticeFacts {
  * Built from the edge's window rather than the current status: at wake time
  * every row reads healthy, so a snapshot cannot tell us which window expired.
  */
-export function blockedPhrase(facts: NoticeFacts): string {
+function blockedPhrase(facts: NoticeFacts): string {
   return `the ${windowLabel(facts.window)} usage window`
-}
-
-/**
- * The one-line account carried in the message source.
- *
- * Rendered collapsed in the client, so it states what happened and nothing
- * else. It is written to fit well inside `CONTEXT_SUMMARY_MAX_CHARS` on its
- * own rather than relying on being truncated.
- */
-export function noticeSummary(facts: NoticeFacts): string {
-  const phrase = blockedPhrase(facts).replace(/^the /, '')
-  return `${facts.provider} ${phrase} reset — blocked work may resume`
 }
 
 /**

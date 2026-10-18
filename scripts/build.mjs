@@ -22,7 +22,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *   schemastery the Config schema is evaluated when the module loads.
  *
  * `@deepseek-ai/dsh-llm` is deliberately absent: the announcement is built
- * without it, and it is used only as a test-only oracle.
+ * without it. It is imported for TYPES only, which never survive bundling.
  */
 const ALLOWED = new Set([
   '@deepseek-ai/cordis',

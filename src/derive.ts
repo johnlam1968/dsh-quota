@@ -23,7 +23,7 @@ export function isVideoModel(model: string, spec: DeriveSpec): boolean {
 }
 
 /** The windows that actually gate this model. */
-export function windowsFor(model: string, spec: DeriveSpec): readonly QuotaWindow[] {
+function windowsFor(model: string, spec: DeriveSpec): readonly QuotaWindow[] {
   return isVideoModel(model, spec) ? ['weekly'] : ['5h', 'weekly']
 }
 
@@ -62,7 +62,7 @@ export function rowFor(
  * subject to the weekly window only. The two windows reset independently, so
  * neither is allowed to speak for the other.
  */
-export function deriveUsable(rows: readonly WindowRow[], model: string, spec: DeriveSpec): boolean {
+function deriveUsable(rows: readonly WindowRow[], model: string, spec: DeriveSpec): boolean {
   return windowsFor(model, spec).every(
     window => rowFor(rows, model, spec, window)?.blocked !== true,
   )
