@@ -192,6 +192,29 @@ console.log('PASS  re-subscribed on the switch back')
     process.exit(1)
   }
   console.log('PASS  and is silent on every later step of the same session')
+
+  // Closing the session must give the briefing back. Without `agent/disposed`
+  // cleanup, `seeded` outlives the agent and a reopened session renders
+  // nothing — silently, and only when the host has not restarted in between.
+  root.emit('agent/disposed', { agent: { ...agent, ctx: agentCtx } })
+  if (contexts.length !== 0 || tools.length !== 0) {
+    console.error(`FAIL  disposing the agent left surfaces registered: contexts=${JSON.stringify(contexts)} tools=${JSON.stringify(tools)}`)
+    process.exit(1)
+  }
+
+  // Reopen it: a fresh agent for the same session id.
+  root.emit('agent/created', { agent: { ...agent, ctx: agentCtx }, source: 'resume' })
+  const reopened = contextDefs.get('quota-usage-status')
+  if (reopened === undefined) {
+    console.error('FAIL  the reopened session was not resubscribed')
+    process.exit(1)
+  }
+  const again = reopened.text()
+  if (again === '' || !again.includes('87')) {
+    console.error(`FAIL  the reopened session got no briefing: ${JSON.stringify(again)}`)
+    process.exit(1)
+  }
+  console.log('PASS  reopening a closed session briefs it again')
 }
 
 // The tool must answer through the same derivation the prompt uses — and now

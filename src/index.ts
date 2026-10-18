@@ -222,6 +222,22 @@ export default class QuotaService extends Service {
      }
     })
 
+    // A closed session's agent is disposed but its id keeps living in `bound`
+    // and `seeded` — nothing else clears them, because `detach` is only reached
+    // on a ROUTE change. Two consequences, both silent:
+    //
+    //   - the entry leaks: one dead id and two dead disposers, per closed
+    //     session, for the life of the process;
+    //   - worse, `seeded` survives, so reopening that session in the SAME host
+    //     process finds its one briefing already spent and renders nothing —
+    //     the agent gets no quota status at all on reactivation.
+    //
+    // The harness contains listener failures on this event, so a throw here
+    // cannot break the disposal it is cleaning up after.
+    this.ctx.on('agent/disposed', ({ agent }): undefined => {
+      this.detach(agent.id)
+    })
+
     // Built ONCE here rather than per subscription. defineTool validates its
     // definition at call time, so a per-subscription call would surface a
     // schema error during `agent/created` — a SERIAL dispatch, where a throw
